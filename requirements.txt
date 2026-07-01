@@ -1,0 +1,8 @@
+pandas
+numpy
+finance-datareader
+matplotlib
+requests
+python-dotenv
+flask
+waitress

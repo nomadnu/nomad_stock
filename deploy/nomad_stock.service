@@ -1,0 +1,25 @@
+# Docker 없이 리눅스 VM/라즈베리파이에서 직접 돌릴 때 쓰는 systemd 유닛.
+# 설치:
+#   sudo cp deploy/nomad_stock.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now nomad_stock
+#   journalctl -u nomad_stock -f      # 로그 확인
+
+[Unit]
+Description=nomad_stock auto trader
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=trader
+WorkingDirectory=/opt/nomad_stock
+Environment=TZ=Asia/Seoul
+Environment=PYTHONUTF8=1
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 run_scheduler.py --live
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

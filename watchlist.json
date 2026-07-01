@@ -1,0 +1,7 @@
+{
+  "run_time": "15:00",
+  "items": [
+    { "symbol": "005930", "strategy": "sma", "params": { "fast": 20, "slow": 60 }, "budget": 1000000 },
+    { "symbol": "000660", "strategy": "rsi", "params": { "period": 14, "oversold": 30, "exit_level": 50 }, "budget": 1000000 }
+  ]
+}

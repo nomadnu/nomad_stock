@@ -1,0 +1,32 @@
+services:
+  # 자동매매 스케줄러 (매 거래일 09:05 매매)
+  trader:
+    build: .
+    container_name: nomad_stock_trader
+    restart: unless-stopped          # 죽으면 자동 재시작 (24h 운영)
+    env_file: .env                   # KIS 키/알림 설정 주입 (이미지에 안 굽는다)
+    environment:
+      - TZ=Asia/Seoul
+    volumes:
+      - ./logs:/app/logs             # 매매 로그 영속화
+      - ./.tokens:/app/.tokens       # 토큰 캐시 영속화(재시작 시 재발급 최소화)
+      - ./data_cache:/app/data_cache
+      - ./watchlist.json:/app/watchlist.json   # 종목 수정 시 컨테이너 재빌드 불필요
+    command: python run_scheduler.py --live
+
+  # 웹 대시보드 (외부 접속용). DASHBOARD_PASSWORD 설정 필수.
+  dashboard:
+    build: .
+    container_name: nomad_stock_dashboard
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - TZ=Asia/Seoul
+    ports:
+      - "5000:5000"                  # 외부:컨테이너
+    volumes:
+      - ./logs:/app/logs             # 매매 로그를 대시보드에서 읽기 위해 공유
+      - ./.tokens:/app/.tokens
+      - ./data_cache:/app/data_cache
+      - ./watchlist.json:/app/watchlist.json
+    command: python run_dashboard.py --prod

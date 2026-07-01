@@ -1,0 +1,9 @@
+{
+  "total_capital": 10000000,
+  "run_time": "15:00",
+  "items": [
+    { "symbol": "005930", "strategy": "sma", "params": { "fast": 20, "slow": 60 }, "weight": 0.4 },
+    { "symbol": "000660", "strategy": "rsi", "params": { "period": 14, "oversold": 25, "exit_level": 60 }, "weight": 0.3 },
+    { "symbol": "035720", "strategy": "bb",  "params": { "period": 20, "num_std": 2.0 }, "weight": 0.3 }
+  ]
+}
