@@ -208,12 +208,22 @@ class KISClient:
         if data.get("rt_cd") != "0":
             raise RuntimeError(f"시세 조회 실패: {data.get('msg1')}")
         o = data["output"]
+
+        def _f(key, cast=int, default=0):
+            try:
+                return cast(o.get(key, default))
+            except (ValueError, TypeError):
+                return default
+
         return {
-            "price": int(o["stck_prpr"]),    # 현재가
-            "open": int(o["stck_oprc"]),     # 시가
-            "high": int(o["stck_hgpr"]),     # 당일 고가
-            "low": int(o["stck_lwpr"]),      # 당일 저가
-            "prev_close": int(o["stck_sdpr"]),  # 전일 종가(기준가)
+            "price": _f("stck_prpr"),        # 현재가
+            "open": _f("stck_oprc"),         # 시가
+            "high": _f("stck_hgpr"),         # 당일 고가
+            "low": _f("stck_lwpr"),          # 당일 저가
+            "prev_close": _f("stck_sdpr"),   # 전일 종가(기준가)
+            "per": _f("per", float),         # PER (적자면 0 또는 음수)
+            "pbr": _f("pbr", float),         # PBR
+            "change_pct": _f("prdy_ctrt", float),  # 전일대비 등락률(%)
         }
 
     # ----- 주문 ---------------------------------------------------------
