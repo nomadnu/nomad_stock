@@ -133,6 +133,24 @@ def create_app() -> Flask:
                     out.append({"symbol": it["symbol"], "strategy": "?", "signal": f"오류: {e}"})
         return jsonify({"items": out})
 
+    @app.route("/manifest.json")
+    def manifest():
+        # PWA 매니페스트 (안드로이드 홈화면 아이콘). 로그인 불필요.
+        return jsonify(
+            {
+                "name": "nomad_stock",
+                "short_name": "nomad_stock",
+                "start_url": "/",
+                "display": "standalone",
+                "background_color": "#0f1420",
+                "theme_color": "#0f1420",
+                "icons": [
+                    {"src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png"},
+                    {"src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png"},
+                ],
+            }
+        )
+
     return app
 
 
@@ -140,6 +158,12 @@ _LOGIN_HTML = """<!doctype html>
 <html lang="ko"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>nomad_stock 로그인</title>
+<link rel="apple-touch-icon" href="/static/icon-180.png">
+<link rel="icon" type="image/png" href="/static/icon-192.png">
+<link rel="manifest" href="/manifest.json">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="nomad_stock">
+<meta name="theme-color" content="#0f1420">
 <style>
   body{margin:0;background:#0f1420;color:#e6edf6;font-family:'Malgun Gothic',system-ui,sans-serif;
        display:flex;min-height:100vh;align-items:center;justify-content:center}
@@ -163,6 +187,12 @@ _HTML = """<!doctype html>
 <html lang="ko"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>nomad_stock 대시보드</title>
+<link rel="apple-touch-icon" href="/static/icon-180.png">
+<link rel="icon" type="image/png" href="/static/icon-192.png">
+<link rel="manifest" href="/manifest.json">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="nomad_stock">
+<meta name="theme-color" content="#0f1420">
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
   :root{--bg:#0f1420;--card:#1a2235;--line:#2a3550;--txt:#e6edf6;--sub:#8a98b4;--up:#ff5a5a;--down:#3d8bff;--accent:#4fd1a5}
