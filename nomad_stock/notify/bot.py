@@ -20,6 +20,7 @@ from .. import rules
 from ..broker import KISClient
 from ..live.market_hours import is_market_open, market_status
 from ..live.risk import RiskConfig, RiskManager
+from ..rebalance import SELL as _REVIEW_SELL, review_holdings
 from ..scanner import format_candidates, scan
 from ..strategy import make_strategy
 
@@ -77,6 +78,9 @@ class TradingBot:
             return self.price_text(arg)
         if cmd in ("원금변경", "setcapital"):
             return self.setcapital_text(arg)
+        if cmd in ("재평가", "점검", "review"):
+            self.run_weekly_review()
+            return "📊 주간 재평가를 실행했어요 (위 결과 확인)."
         if cmd in ("도움말", "명령", "help", "?", "start"):
             return self.help_text()
         return "모르는 명령이에요.\n" + self.help_text()
@@ -90,6 +94,7 @@ class TradingBot:
             "• 오늘 — 오늘 매매 내역\n"
             "• 신호 — 전략 현재 신호\n"
             "• 상태 — 봇 가동/정지·한도·방어선\n"
+            "• 재평가 — 보유종목 주간 점검 (수동 실행)\n"
             "• 정지 / 재개 — 자동매매 킬스위치\n"
             "• 원금변경 [금액] — 운용원금 변경\n"
             "• myid — 내 chat_id 확인\n"
@@ -273,6 +278,57 @@ class TradingBot:
         except Exception as e:
             return f"주문 실패: {e}"
 
+    # ----- 주간 재평가 (STEP 7, 지침서 v0.4 §3-2) -----
+    def run_weekly_review(self) -> None:
+        """금요일 마감 후: 보유종목 재평가 → 매도검토 종목 승인 매도 알림."""
+        try:
+            bal = self.client.get_balance()
+        except Exception as e:
+            self.send(f"주간 점검 조회 실패: {e}")
+            return
+        holdings = bal["holdings"]
+        if not holdings:
+            self.send("📊 주간 점검: 보유 종목이 없습니다. 현금 대기 중.")
+            return
+        reviewed = review_holdings(holdings)
+        emoji = {"보유권장": "✅", "주의": "🟡", "매도검토": "⚠️"}
+        lines = ["📊 보유 종목 주간 점검 (금요일 마감 후)"]
+        sell_list = []
+        for r in reviewed:
+            pnl = (r["cur_price"] / r["avg_price"] - 1) * 100 if r["avg_price"] else 0
+            lines.append(
+                f"• {r['name']} ({pnl:+.1f}%): {r['reason']} "
+                f"→ {r['status']} {emoji.get(r['status'], '')}"
+            )
+            if r["status"] == _REVIEW_SELL:
+                sell_list.append(r)
+        text = "\n".join(lines)
+        if sell_list:
+            buttons = [
+                {"text": f"✅ 매도 {r['name']}", "callback_data": f"sell:{r['symbol']}"}
+                for r in sell_list
+            ]
+            buttons.append({"text": "❌ 전체 보유", "callback_data": "hold"})
+            self.send_buttons(text + "\n\n매도 검토 종목을 정리할까요?", buttons)
+        else:
+            self.send(text + "\n\n모두 보유 권장. 조치 불필요.")
+
+    def execute_sell(self, code: str) -> str:
+        """승인된 종목을 전량 시장가 매도 (주간 재평가용)."""
+        try:
+            bal = self.client.get_balance()
+        except Exception as e:
+            return f"잔고 조회 실패: {e}"
+        h = next((x for x in bal["holdings"] if x["symbol"] == code), None)
+        if not h:
+            return f"{code}: 보유하고 있지 않아요 (이미 정리됨?)."
+        try:
+            result = self.client.order_cash(code, h["qty"], "sell", order_type="01")
+            odno = result.get("output", {}).get("ODNO", "?")
+            return f"✅ 매도 완료: {h['name']} {h['qty']}주 (주문번호 {odno})"
+        except Exception as e:
+            return f"매도 실패: {e}"
+
     # ----- 리스크 감시 (STEP 5) -----
     def run_risk_check(self) -> None:
         """장중 주기 실행: 방어선 도달 시 완전정지, 종목별 -7% 손절 자동매도.
@@ -316,8 +372,11 @@ class TradingBot:
         self.send("🤖 봇 가동. 명령: 상태·잔고·정지. 매일 12:50 강세종목 승인 알림.")
         h, m = rules.APPROVAL_TIME.split(":")
         scan_time = dtime(int(h), int(m))
+        rh, rm = rules.REVIEW_TIME.split(":")
+        review_time = dtime(int(rh), int(rm))
         offset = None
         last_scan_date = None
+        last_review_date = None
         last_risk = 0.0
         while True:
             now = datetime.now()
@@ -329,6 +388,14 @@ class TradingBot:
                     self.run_daily_scan()
                 except Exception as e:
                     print(f"[봇] 스캔 오류: {e!r}")
+            # 금요일 마감 후 주간 재평가 (주 1회)
+            if (now.weekday() == rules.REVIEW_DAY and now.time() >= review_time
+                    and last_review_date != now.date()):
+                last_review_date = now.date()
+                try:
+                    self.run_weekly_review()
+                except Exception as e:
+                    print(f"[봇] 재평가 오류: {e!r}")
             # 장중 리스크 감시 (3분마다)
             if is_market_open(now) and time.time() - last_risk > 180:
                 last_risk = time.time()
@@ -377,6 +444,9 @@ class TradingBot:
         if data == "skip":
             self.send("❌ 전체 무시. 오늘은 현금 대기합니다.")
             return
+        if data == "hold":
+            self.send("✅ 전체 보유 유지. 매도 안 함.")
+            return
         if data.startswith("buy:"):
             code = data.split(":", 1)[1]
             if code not in self._pending_codes():
@@ -384,3 +454,7 @@ class TradingBot:
                 return
             self.send(f"주문 처리 중... ({code})")
             self.send(self.execute_buy(code))
+        elif data.startswith("sell:"):  # 주간 재평가 승인 매도
+            code = data.split(":", 1)[1]
+            self.send(f"매도 처리 중... ({code})")
+            self.send(self.execute_sell(code))

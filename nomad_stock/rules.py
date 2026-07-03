@@ -22,6 +22,8 @@ MAX_POSITION_AMOUNT = 2_000_000     # 한 종목 최대 금액 (200만)
 STOP_LOSS_PCT = 0.07                # 종목당 손절선 -7%
 ATR_STOP_MULT = 2.0                 # ATR×2 손절 (대체 기준)
 APPROVAL_TIME = "12:50"             # 승인 알림 시각 (오전장 강세 종목)
+REVIEW_DAY = 4                      # 주간 재평가 요일 (0=월 ... 4=금)
+REVIEW_TIME = "15:40"              # 주간 재평가 시각 (장 마감 15:30 이후)
 
 # 종목 유니버스 & 자동 필터
 UNIVERSE = "KOSPI200"
