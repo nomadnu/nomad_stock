@@ -414,7 +414,7 @@ class TradingBot:
                     self.run_weekly_review()
                 except Exception as e:
                     print(f"[봇] 재평가 오류: {e!r}")
-            # 저녁 미국주식 추천 (평일 1회, 미국장 개장 전)
+            # 저녁 9시 미국주식 추천 (미국장 개장 전, 평일 1회)
             if (now.weekday() < 5 and now.time() >= us_time
                     and last_us_date != now.date()):
                 last_us_date = now.date()
