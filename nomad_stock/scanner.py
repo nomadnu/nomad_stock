@@ -119,6 +119,88 @@ def scan(client: KISClient | None = None, max_candidates: int = 3) -> list[dict]
     return cands[:max_candidates]
 
 
+# ===== 미국주식 (추천·정보만, KIS 연동 없음) =====
+# 저녁(미국장 개장 전)에 '지난 미국장 마감 기준 강세 종목'을 추천.
+# S&P500 대형주라 시총 필터 불필요. 데이터는 FDR(일봉)만 사용.
+US_SYMBOLS = [
+    "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "AVGO", "ORCL", "ADBE",
+    "CRM", "AMD", "NFLX", "INTC", "QCOM", "CSCO", "TXN", "IBM", "JPM", "BAC",
+    "WFC", "GS", "MS", "V", "MA", "AXP", "UNH", "JNJ", "LLY", "PFE",
+    "MRK", "ABBV", "TMO", "WMT", "COST", "HD", "MCD", "NKE", "SBUX", "KO",
+    "PEP", "PG", "DIS", "XOM", "CVX", "BA", "CAT", "GE", "T", "VZ",
+]
+
+_US_NAMES: dict[str, tuple[str, str]] = {}  # symbol -> (name, sector) 캐시
+
+
+def _us_meta(symbol: str) -> tuple[str, str]:
+    """S&P500 목록에서 회사명·섹터를 가져온다(캐시)."""
+    global _US_NAMES
+    if not _US_NAMES:
+        try:
+            sp = fdr.StockListing("S&P500")
+            _US_NAMES = {
+                r["Symbol"]: (r["Name"], r.get("Sector", ""))
+                for _, r in sp.iterrows()
+            }
+        except Exception:
+            _US_NAMES = {}
+    return _US_NAMES.get(symbol, (symbol, ""))
+
+
+def scan_us(max_candidates: int = 5) -> list[dict]:
+    """미국 대형주 강세 후보 (지난 마감 기준). 모멘텀 높은 순 정렬."""
+    cands = []
+    for sym in US_SYMBOLS:
+        try:
+            h = fdr.DataReader(sym, "2024-06-01")
+        except Exception:
+            continue
+        if len(h) < rules.MA_TREND + 5:
+            continue
+        close, vol = h["Close"], h["Volume"]
+        last = close.iloc[-1]
+        ma60 = close.rolling(rules.MA_TREND).mean().iloc[-1]
+        mid = close.rolling(20).mean()
+        std = close.rolling(20).std()
+        upper = (mid + 2 * std).iloc[-1]
+        vol_ok = vol.iloc[-1] > vol.rolling(20).mean().iloc[-1]
+        if not (last > ma60 and last > upper and vol_ok):
+            continue
+        name, sector = _us_meta(sym)
+        cands.append(
+            {
+                "symbol": sym,
+                "name": name,
+                "sector": sector,
+                "price": round(float(last), 2),
+                "change_pct": round((last / close.iloc[-2] - 1) * 100, 2),
+                "ret5": round((last / close.iloc[-6] - 1) * 100, 1) if len(close) > 6 else 0.0,
+                "ret20": round((last / close.iloc[-21] - 1) * 100, 1) if len(close) > 21 else 0.0,
+            }
+        )
+    cands.sort(key=lambda c: c["ret20"], reverse=True)  # 1개월 모멘텀 높은 순
+    return cands[:max_candidates]
+
+
+def format_us_candidates(cands: list[dict]) -> str:
+    """미국주식 추천 텍스트 (정보 제공용, 매수 버튼 없음)."""
+    if not cands:
+        return (
+            "🇺🇸 지난 미국장 강세 조건을 통과한 대형주가 없습니다.\n"
+            "→ 오늘은 미국장도 쉬어가는 게 좋아 보여요."
+        )
+    lines = ["🇺🇸 미국 대형주 강세 추천 (지난 마감 기준, 모멘텀순)"]
+    for i, c in enumerate(cands, 1):
+        lines.append(
+            f"\n{i}. {c['name']} ({c['symbol']}) · {c['sector']}\n"
+            f"   ${c['price']} ({c['change_pct']:+.1f}%) · "
+            f"최근 5일 {c['ret5']:+.1f}% · 1개월 {c['ret20']:+.1f}%"
+        )
+    lines.append("\n\n※ 참고 정보예요. 매수는 직접 판단·주문하세요 (자동매매 아님).")
+    return "\n".join(lines)
+
+
 def format_candidates(cands: list[dict]) -> str:
     """승인 알림용 텍스트 (판단 보조 정보 포함)."""
     if not cands:

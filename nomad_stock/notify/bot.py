@@ -21,7 +21,7 @@ from ..broker import KISClient
 from ..live.market_hours import is_market_open, market_status
 from ..live.risk import RiskConfig, RiskManager
 from ..rebalance import SELL as _REVIEW_SELL, review_holdings
-from ..scanner import format_candidates, scan
+from ..scanner import format_candidates, format_us_candidates, scan, scan_us
 from ..strategy import make_strategy
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -81,6 +81,9 @@ class TradingBot:
         if cmd in ("재평가", "점검", "review"):
             self.run_weekly_review()
             return "📊 주간 재평가를 실행했어요 (위 결과 확인)."
+        if cmd in ("미국", "미장", "us"):
+            self.run_us_recommend()
+            return "🇺🇸 미국주식 추천을 실행했어요 (위 결과 확인)."
         if cmd in ("도움말", "명령", "help", "?", "start"):
             return self.help_text()
         return "모르는 명령이에요.\n" + self.help_text()
@@ -95,6 +98,7 @@ class TradingBot:
             "• 신호 — 전략 현재 신호\n"
             "• 상태 — 봇 가동/정지·한도·방어선\n"
             "• 재평가 — 보유종목 주간 점검 (수동 실행)\n"
+            "• 미국 — 미국 대형주 강세 추천 (정보만)\n"
             "• 정지 / 재개 — 자동매매 킬스위치\n"
             "• 원금변경 [금액] — 운용원금 변경\n"
             "• myid — 내 chat_id 확인\n"
@@ -278,6 +282,17 @@ class TradingBot:
         except Exception as e:
             return f"주문 실패: {e}"
 
+    # ----- 미국주식 추천 (정보 제공만, 자동매매 아님) -----
+    def run_us_recommend(self) -> None:
+        """저녁(미국장 개장 전): 지난 미국장 강세 대형주 추천. 버튼 없음."""
+        self.send("🇺🇸 미국 대형주 스캔 중... (1~2분 걸려요)")
+        try:
+            cands = scan_us()
+        except Exception as e:
+            self.send(f"미국 스캔 실패: {e}")
+            return
+        self.send(format_us_candidates(cands))
+
     # ----- 주간 재평가 (STEP 7, 지침서 v0.4 §3-2) -----
     def run_weekly_review(self) -> None:
         """금요일 마감 후: 보유종목 재평가 → 매도검토 종목 승인 매도 알림."""
@@ -374,9 +389,12 @@ class TradingBot:
         scan_time = dtime(int(h), int(m))
         rh, rm = rules.REVIEW_TIME.split(":")
         review_time = dtime(int(rh), int(rm))
+        uh, um = rules.US_RECOMMEND_TIME.split(":")
+        us_time = dtime(int(uh), int(um))
         offset = None
         last_scan_date = None
         last_review_date = None
+        last_us_date = None
         last_risk = 0.0
         while True:
             now = datetime.now()
@@ -396,6 +414,14 @@ class TradingBot:
                     self.run_weekly_review()
                 except Exception as e:
                     print(f"[봇] 재평가 오류: {e!r}")
+            # 저녁 미국주식 추천 (평일 1회, 미국장 개장 전)
+            if (now.weekday() < 5 and now.time() >= us_time
+                    and last_us_date != now.date()):
+                last_us_date = now.date()
+                try:
+                    self.run_us_recommend()
+                except Exception as e:
+                    print(f"[봇] 미국 스캔 오류: {e!r}")
             # 장중 리스크 감시 (3분마다)
             if is_market_open(now) and time.time() - last_risk > 180:
                 last_risk = time.time()
