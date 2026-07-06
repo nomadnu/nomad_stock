@@ -12,6 +12,7 @@ services:
       - ./.tokens:/app/.tokens       # 토큰 캐시(대시보드와 공유 → KIS 충돌 방지)
       - ./data_cache:/app/data_cache
       - ./watchlist.json:/app/watchlist.json
+      - ./state:/app/state           # 미국 페이퍼 장부(대시보드와 공유)
     command: python run_bot.py
 
   # 웹 대시보드 (외부 접속용). DASHBOARD_PASSWORD 설정 필수.
@@ -29,4 +30,5 @@ services:
       - ./.tokens:/app/.tokens
       - ./data_cache:/app/data_cache
       - ./watchlist.json:/app/watchlist.json
+      - ./state:/app/state           # 미국 페이퍼 장부(봇과 공유, 읽기)
     command: python run_dashboard.py --prod

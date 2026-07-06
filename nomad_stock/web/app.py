@@ -133,6 +133,15 @@ def create_app() -> Flask:
                     out.append({"symbol": it["symbol"], "strategy": "?", "signal": f"오류: {e}"})
         return jsonify({"items": out})
 
+    @app.route("/api/us")
+    @login_required
+    def api_us():
+        from .. import paper_us
+        try:
+            return jsonify(paper_us.evaluate())
+        except Exception as ex:  # KIS와 무관(FDR)이지만 안전하게 JSON으로
+            return jsonify({"error": str(ex)}), 200
+
     @app.route("/manifest.json")
     def manifest():
         # PWA 매니페스트 (안드로이드 홈화면 아이콘). 로그인 불필요.
@@ -235,7 +244,13 @@ _HTML = """<!doctype html>
       <thead><tr><th>종목</th><th>전략</th><th>신호</th></tr></thead><tbody></tbody></table></div>
     <div class="sec"><h2>최근 매매 로그</h2><pre id="log">-</pre></div>
   </div>
-  <div style="margin:14px 0"><button onclick="loadAll()">새로고침</button>
+  <div class="sec"><h2>🇺🇸 미국 페이퍼 계좌 <span class="muted" id="us-fx"></span></h2>
+    <div id="us-summary" class="muted">불러오는 중…</div>
+    <table id="us-holdings" style="display:none;margin-top:8px">
+      <thead><tr><th>종목</th><th>수량</th><th>평균$</th><th>현재$</th><th>손익$</th><th>손익₩</th></tr></thead>
+      <tbody></tbody></table>
+  </div>
+  <div style="margin:14px 0"><button onclick="loadAll();loadUS()">새로고침</button>
     {% if auth %}<a href="/logout" style="color:#8a98b4;font-size:13px;margin-left:10px">로그아웃</a>{% endif %}
     <span class="muted" id="updated"></span></div>
 </div>
@@ -279,6 +294,23 @@ function drawPie(holdings, cash){
     data:{labels,datasets:[{data,backgroundColor:colors,borderColor:'#1a2235',borderWidth:2}]},
     options:{plugins:{legend:{labels:{color:'#8a98b4',font:{size:11}}}}}});
 }
-loadAll(); setInterval(loadAll, 30000);
+async function loadUS(){
+  const s=document.getElementById('us-summary'), tbl=document.getElementById('us-holdings');
+  try{
+    const u = await (await fetch('/api/us')).json();
+    if(u.error){ s.textContent='조회 실패: '+u.error; tbl.style.display='none'; return; }
+    document.getElementById('us-fx').textContent='(환율 '+Math.round(u.fx)+')';
+    s.innerHTML = `현금 $${Math.round(u.cash_usd).toLocaleString()} · 총평가 $${Math.round(u.total_usd).toLocaleString()} `
+      +`(≈${won(Math.round(u.total_krw))}) · 원금대비 <span class="${cls(u.pnl_krw)}">${won(Math.round(u.pnl_krw))}</span>`;
+    const tb=tbl.querySelector('tbody'); tb.innerHTML='';
+    if(u.rows && u.rows.length){ tbl.style.display='';
+      u.rows.forEach(r=>{ tb.innerHTML += `<tr><td>${r.name}<br><span class="muted">${r.symbol}</span></td>
+        <td>${r.qty}</td><td>$${r.avg_usd}</td><td>$${r.cur_usd}</td>
+        <td class="${cls(r.pnl_usd)}">${r.pnl_usd>0?'+':''}${Math.round(r.pnl_usd)}</td>
+        <td class="${cls(r.pnl_krw)}">${won(Math.round(r.pnl_krw))}</td></tr>`; });
+    } else { tbl.style.display='none'; s.innerHTML += ' · 보유 없음'; }
+  }catch(e){ s.textContent='미국 조회 실패: '+e; tbl.style.display='none'; }
+}
+loadAll(); loadUS(); setInterval(loadAll, 30000);
 </script>
 </body></html>"""

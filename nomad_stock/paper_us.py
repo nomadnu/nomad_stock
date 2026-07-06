@@ -17,8 +17,11 @@ import FinanceDataReader as fdr
 from . import rules
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_LEDGER_PATH = os.path.join(_ROOT, "paper_us.json")
-_RESV_PATH = os.path.join(_ROOT, "us_reservations.json")
+# 봇·대시보드 컨테이너가 공유하는 state 폴더(도커 볼륨). 장부를 양쪽이 함께 본다.
+_STATE_DIR = os.path.join(_ROOT, "state")
+os.makedirs(_STATE_DIR, exist_ok=True)
+_LEDGER_PATH = os.path.join(_STATE_DIR, "paper_us.json")
+_RESV_PATH = os.path.join(_STATE_DIR, "us_reservations.json")
 
 
 # ----- 시세·환율 -----
