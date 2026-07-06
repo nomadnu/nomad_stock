@@ -223,43 +223,63 @@ _HTML = """<!doctype html>
   .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px}
   .pill.buy{background:rgba(79,209,165,.15);color:var(--accent)} .pill.cash{background:rgba(138,152,180,.15);color:var(--sub)}
   button{background:var(--card);color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:6px 12px;cursor:pointer}
+  .tabs{display:flex;gap:8px;margin:12px 0}
+  .tab{background:var(--card);border:1px solid var(--line);color:var(--sub);padding:9px 20px;border-radius:10px;font-size:15px;cursor:pointer}
+  .tab.active{background:var(--accent);color:#0f1420;border-color:var(--accent);font-weight:700}
   @media(max-width:640px){.cards{grid-template-columns:1fr}}
 </style></head>
 <body><div class="wrap">
   <h1>📈 nomad_stock 대시보드 <span class="muted" id="badge"></span></h1>
-  <div class="muted" id="meta">불러오는 중…</div>
-  <div class="cards">
-    <div class="card"><div class="label">예수금</div><div class="val" id="cash">-</div></div>
-    <div class="card"><div class="label">총평가금액</div><div class="val" id="total">-</div></div>
-    <div class="card"><div class="label">평가손익</div><div class="val" id="pnl">-</div></div>
+  <div class="tabs">
+    <button class="tab active" id="tabbtn-kr" onclick="showTab('kr')">🇰🇷 한국</button>
+    <button class="tab" id="tabbtn-us" onclick="showTab('us')">🇺🇸 미국 (페이퍼)</button>
   </div>
-  <div class="row">
-    <div class="sec" style="flex:2"><h2>보유 종목</h2><table id="holdings">
-      <thead><tr><th>종목</th><th>수량</th><th>평균가</th><th>현재가</th><th>평가금액</th><th>손익률</th></tr></thead>
-      <tbody></tbody></table><div class="muted" id="noh" style="display:none">보유 종목 없음</div></div>
-    <div class="sec" style="flex:1"><h2>비중</h2><canvas id="pie" height="220"></canvas></div>
+
+  <div id="tab-kr">
+    <div class="muted" id="meta">불러오는 중…</div>
+    <div class="cards">
+      <div class="card"><div class="label">예수금</div><div class="val" id="cash">-</div></div>
+      <div class="card"><div class="label">총평가금액</div><div class="val" id="total">-</div></div>
+      <div class="card"><div class="label">평가손익</div><div class="val" id="pnl">-</div></div>
+    </div>
+    <div class="row">
+      <div class="sec" style="flex:2"><h2>보유 종목</h2><table id="holdings">
+        <thead><tr><th>종목</th><th>수량</th><th>평균가</th><th>현재가</th><th>평가금액</th><th>손익률</th></tr></thead>
+        <tbody></tbody></table><div class="muted" id="noh" style="display:none">보유 종목 없음</div></div>
+      <div class="sec" style="flex:1"><h2>비중</h2><canvas id="pie" height="220"></canvas></div>
+    </div>
+    <div class="row">
+      <div class="sec"><h2>전략 신호 (watchlist)</h2><table id="wl">
+        <thead><tr><th>종목</th><th>전략</th><th>신호</th></tr></thead><tbody></tbody></table></div>
+      <div class="sec"><h2>최근 매매 로그</h2><pre id="log">-</pre></div>
+    </div>
   </div>
-  <div class="row">
-    <div class="sec"><h2>전략 신호 (watchlist)</h2><table id="wl">
-      <thead><tr><th>종목</th><th>전략</th><th>신호</th></tr></thead><tbody></tbody></table></div>
-    <div class="sec"><h2>최근 매매 로그</h2><pre id="log">-</pre></div>
+
+  <div id="tab-us" style="display:none">
+    <div class="muted" id="us-meta">불러오는 중…</div>
+    <div class="cards">
+      <div class="card"><div class="label">현금 (USD)</div><div class="val" id="us-cash">-</div></div>
+      <div class="card"><div class="label">총평가 (USD / 원)</div><div class="val" id="us-total" style="font-size:17px">-</div></div>
+      <div class="card"><div class="label">원금대비 손익</div><div class="val" id="us-pnl">-</div></div>
+    </div>
+    <div class="row">
+      <div class="sec" style="flex:2"><h2>보유 종목 (페이퍼)</h2><table id="us-holdings">
+        <thead><tr><th>종목</th><th>수량</th><th>평균$</th><th>현재$</th><th>평가$</th><th>손익률</th></tr></thead>
+        <tbody></tbody></table><div class="muted" id="us-noh" style="display:none">보유 종목 없음 (전액 현금)</div></div>
+      <div class="sec" style="flex:1"><h2>비중</h2><canvas id="us-pie" height="220"></canvas></div>
+    </div>
+    <div class="muted" style="margin-top:6px">※ 앱 내부 가상 장부 (실제 주문 없음) · 손익에 환율 변동 포함</div>
   </div>
-  <div class="sec"><h2>🇺🇸 미국 페이퍼 계좌 <span class="muted" id="us-fx"></span></h2>
-    <div id="us-summary" class="muted">불러오는 중…</div>
-    <table id="us-holdings" style="display:none;margin-top:8px">
-      <thead><tr><th>종목</th><th>수량</th><th>평균$</th><th>현재$</th><th>손익$</th><th>손익₩</th></tr></thead>
-      <tbody></tbody></table>
-  </div>
-  <div style="margin:14px 0"><button onclick="loadAll();loadUS()">새로고침</button>
+  <div style="margin:14px 0"><button onclick="refresh()">새로고침</button>
     {% if auth %}<a href="/logout" style="color:#8a98b4;font-size:13px;margin-left:10px">로그아웃</a>{% endif %}
     <span class="muted" id="updated"></span></div>
 </div>
 <script>
-const won = n => (n==null?'-':n.toLocaleString('ko-KR')+'원');
+const won = n => (n==null?'-':Math.round(n).toLocaleString('ko-KR')+'원');
 const cls = v => v>0?'up':(v<0?'down':'');
 const sign = v => (v>0?'+':'')+v.toFixed(2)+'%';
-let pie;
-async function loadAll(){
+let krPie, usPie, curTab='kr';
+async function loadKR(){
   try{
     const s = await (await fetch('/api/summary')).json();
     document.getElementById('badge').textContent = '('+(s.env==='real'?'실거래':'모의투자')+' · '+s.account+')';
@@ -269,12 +289,10 @@ async function loadAll(){
     const p = document.getElementById('pnl'); p.textContent = won(s.total_pnl); p.className='val '+cls(s.total_pnl);
     const tb = document.querySelector('#holdings tbody'); tb.innerHTML='';
     document.getElementById('noh').style.display = s.holdings.length?'none':'block';
-    s.holdings.forEach(h=>{
-      tb.innerHTML += `<tr><td>${h.name}<br><span class="muted">${h.symbol}</span></td>
-        <td>${h.qty}</td><td>${won(h.avg_price)}</td><td>${won(h.cur_price)}</td>
-        <td>${won(h.value)}</td><td class="${cls(h.pnl_pct)}">${sign(h.pnl_pct)}</td></tr>`;
-    });
-    drawPie(s.holdings, s.cash);
+    s.holdings.forEach(h=>{ tb.innerHTML += `<tr><td>${h.name}<br><span class="muted">${h.symbol}</span></td>
+      <td>${h.qty}</td><td>${won(h.avg_price)}</td><td>${won(h.cur_price)}</td>
+      <td>${won(h.value)}</td><td class="${cls(h.pnl_pct)}">${sign(h.pnl_pct)}</td></tr>`; });
+    krPie = drawPie('pie', krPie, s.holdings.map(h=>h.name), s.holdings.map(h=>h.value), s.cash);
     const w = await (await fetch('/api/watchlist')).json();
     const wb = document.querySelector('#wl tbody'); wb.innerHTML='';
     w.items.forEach(i=>{ const buy=i.signal==='매수보유';
@@ -282,35 +300,45 @@ async function loadAll(){
         <td><span class="pill ${buy?'buy':'cash'}">${i.signal}</span></td></tr>`; });
     const t = await (await fetch('/api/trades')).json();
     document.getElementById('log').textContent = t.lines.join('\\n') || '아직 매매 기록 없음';
-    document.getElementById('updated').textContent = '갱신: '+new Date().toLocaleTimeString('ko-KR');
+    stamp();
   }catch(e){ document.getElementById('meta').textContent='조회 실패: '+e; }
 }
-function drawPie(holdings, cash){
-  const labels = holdings.map(h=>h.name).concat(['현금']);
-  const data = holdings.map(h=>h.value).concat([cash]);
-  const colors = ['#4fd1a5','#3d8bff','#ff5a5a','#f7b731','#a55eea','#26de81','#778ca3'];
-  if(pie) pie.destroy();
-  pie = new Chart(document.getElementById('pie'),{type:'doughnut',
+async function loadUS(){
+  try{
+    const u = await (await fetch('/api/us')).json();
+    if(u.error){ document.getElementById('us-meta').textContent='조회 실패: '+u.error; return; }
+    document.getElementById('us-meta').textContent = '앱 내부 페이퍼 계좌 · 환율 '+Math.round(u.fx);
+    document.getElementById('us-cash').textContent = '$'+Math.round(u.cash_usd).toLocaleString();
+    document.getElementById('us-total').textContent = '$'+Math.round(u.total_usd).toLocaleString()+' / '+won(u.total_krw);
+    const p = document.getElementById('us-pnl'); p.textContent = won(u.pnl_krw); p.className='val '+cls(u.pnl_krw);
+    const tb = document.querySelector('#us-holdings tbody'); tb.innerHTML='';
+    document.getElementById('us-noh').style.display = u.rows.length?'none':'block';
+    u.rows.forEach(r=>{ const val=r.qty*r.cur_usd;
+      tb.innerHTML += `<tr><td>${r.name}<br><span class="muted">${r.symbol}</span></td>
+        <td>${r.qty}</td><td>$${r.avg_usd}</td><td>$${r.cur_usd}</td>
+        <td>$${Math.round(val).toLocaleString()}</td><td class="${cls(r.pct)}">${sign(r.pct)}</td></tr>`; });
+    usPie = drawPie('us-pie', usPie, u.rows.map(r=>r.name), u.rows.map(r=>r.qty*r.cur_usd), u.cash_usd);
+    stamp();
+  }catch(e){ document.getElementById('us-meta').textContent='미국 조회 실패: '+e; }
+}
+function drawPie(canvasId, chart, labels, data, cash){
+  labels = labels.concat(['현금']); data = data.concat([cash]);
+  const colors = ['#4fd1a5','#3d8bff','#ff5a5a','#f7b731','#a55eea','#26de81','#778ca3','#fd9644'];
+  if(chart) chart.destroy();
+  return new Chart(document.getElementById(canvasId),{type:'doughnut',
     data:{labels,datasets:[{data,backgroundColor:colors,borderColor:'#1a2235',borderWidth:2}]},
     options:{plugins:{legend:{labels:{color:'#8a98b4',font:{size:11}}}}}});
 }
-async function loadUS(){
-  const s=document.getElementById('us-summary'), tbl=document.getElementById('us-holdings');
-  try{
-    const u = await (await fetch('/api/us')).json();
-    if(u.error){ s.textContent='조회 실패: '+u.error; tbl.style.display='none'; return; }
-    document.getElementById('us-fx').textContent='(환율 '+Math.round(u.fx)+')';
-    s.innerHTML = `현금 $${Math.round(u.cash_usd).toLocaleString()} · 총평가 $${Math.round(u.total_usd).toLocaleString()} `
-      +`(≈${won(Math.round(u.total_krw))}) · 원금대비 <span class="${cls(u.pnl_krw)}">${won(Math.round(u.pnl_krw))}</span>`;
-    const tb=tbl.querySelector('tbody'); tb.innerHTML='';
-    if(u.rows && u.rows.length){ tbl.style.display='';
-      u.rows.forEach(r=>{ tb.innerHTML += `<tr><td>${r.name}<br><span class="muted">${r.symbol}</span></td>
-        <td>${r.qty}</td><td>$${r.avg_usd}</td><td>$${r.cur_usd}</td>
-        <td class="${cls(r.pnl_usd)}">${r.pnl_usd>0?'+':''}${Math.round(r.pnl_usd)}</td>
-        <td class="${cls(r.pnl_krw)}">${won(Math.round(r.pnl_krw))}</td></tr>`; });
-    } else { tbl.style.display='none'; s.innerHTML += ' · 보유 없음'; }
-  }catch(e){ s.textContent='미국 조회 실패: '+e; tbl.style.display='none'; }
+function stamp(){ document.getElementById('updated').textContent='갱신: '+new Date().toLocaleTimeString('ko-KR'); }
+function showTab(name){
+  curTab=name;
+  document.getElementById('tab-kr').style.display = name==='kr'?'':'none';
+  document.getElementById('tab-us').style.display = name==='us'?'':'none';
+  document.getElementById('tabbtn-kr').className = 'tab'+(name==='kr'?' active':'');
+  document.getElementById('tabbtn-us').className = 'tab'+(name==='us'?' active':'');
+  refresh();
 }
-loadAll(); loadUS(); setInterval(loadAll, 30000);
+function refresh(){ if(curTab==='kr') loadKR(); else loadUS(); }
+loadKR(); setInterval(refresh, 30000);
 </script>
 </body></html>"""
