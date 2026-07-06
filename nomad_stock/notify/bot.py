@@ -13,10 +13,11 @@ import json
 import os
 import time
 from datetime import date, datetime, time as dtime
+from zoneinfo import ZoneInfo
 
 import requests
 
-from .. import rules
+from .. import paper_us, rules
 from ..broker import KISClient
 from ..live.market_hours import is_market_open, market_status
 from ..live.risk import RiskConfig, RiskManager
@@ -82,8 +83,10 @@ class TradingBot:
             self.run_weekly_review()
             return "📊 주간 재평가를 실행했어요 (위 결과 확인)."
         if cmd in ("미국", "미장", "us"):
-            self.run_us_recommend()
-            return "🇺🇸 미국주식 추천을 실행했어요 (위 결과 확인)."
+            self.run_us_paper_alert()
+            return "🇺🇸 미국 페이퍼 알림을 실행했어요 (위 결과 확인)."
+        if cmd in ("미국잔고", "미국계좌", "usbalance"):
+            return paper_us.format_balance()
         if cmd in ("도움말", "명령", "help", "?", "start"):
             return self.help_text()
         return "모르는 명령이에요.\n" + self.help_text()
@@ -98,7 +101,8 @@ class TradingBot:
             "• 신호 — 전략 현재 신호\n"
             "• 상태 — 봇 가동/정지·한도·방어선\n"
             "• 재평가 — 보유종목 주간 점검 (수동 실행)\n"
-            "• 미국 — 미국 대형주 강세 추천 (정보만)\n"
+            "• 미국 — 미국 페이퍼 후보 알림 (매수/매도 승인)\n"
+            "• 미국잔고 — 미국 페이퍼 계좌 (달러·원화)\n"
             "• 정지 / 재개 — 자동매매 킬스위치\n"
             "• 원금변경 [금액] — 운용원금 변경\n"
             "• myid — 내 chat_id 확인\n"
@@ -282,16 +286,77 @@ class TradingBot:
         except Exception as e:
             return f"주문 실패: {e}"
 
-    # ----- 미국주식 추천 (정보 제공만, 자동매매 아님) -----
-    def run_us_recommend(self) -> None:
-        """저녁(미국장 개장 전): 지난 미국장 강세 대형주 추천. 버튼 없음."""
-        self.send("🇺🇸 미국 대형주 스캔 중... (1~2분 걸려요)")
+    # ----- 미국 페이퍼 트레이딩 (트랙 B, 지침서 v0.5 / 실제주문 없음) -----
+    def run_us_paper_alert(self) -> None:
+        """밤 9시: 미국 매수후보 + 보유 매도후보를 승인 버튼과 함께. 승인분은 개장後 기록 예약."""
+        st = rules.load_state()
+        if st.halted:
+            self.send("🔴 정지 상태라 미국 페이퍼 알림을 건너뜁니다.")
+            return
+        self.send("🇺🇸 미국 페이퍼 후보 스캔 중... (1~2분)")
         try:
-            cands = scan_us()
+            buys = scan_us()
+            fx = paper_us.fx_rate()
         except Exception as e:
             self.send(f"미국 스캔 실패: {e}")
             return
-        self.send(format_us_candidates(cands))
+        led = paper_us.load_ledger()
+        sells = []
+        for sym, pos in led["positions"].items():
+            status, reason = paper_us.evaluate_us_holding(sym, pos["avg_usd"])
+            if status == "매도검토":
+                sells.append((sym, pos["name"], reason))
+
+        lines = [f"🇺🇸 미국 페이퍼 트레이딩 (밤 9시 · 환율 {fx:.0f})"]
+        lines.append("\n[매수 후보] (PER 대신 모멘텀순)" if buys else "\n매수 후보 없음")
+        for c in buys:
+            lines.append(
+                f"• {c['name']}({c['symbol']}) ${c['price']} (≈{c['price']*fx:,.0f}원)"
+                f" · 5일 {c['ret5']:+.1f}% · 1개월 {c['ret20']:+.1f}%"
+            )
+        if sells:
+            lines.append("\n[매도 후보(보유중)]")
+            for sym, name, reason in sells:
+                lines.append(f"• {name}({sym}): {reason}")
+        lines.append("\n승인분은 새벽 개장 후 실시간 가격으로 장부에 기록돼요 (지금 안 주무셔도 됨).")
+
+        buttons = [{"text": f"✅매수 {c['name'][:12]}", "callback_data": f"usbuy:{c['symbol']}"} for c in buys]
+        buttons += [{"text": f"🔴매도 {name[:12]}", "callback_data": f"ussell:{sym}"} for sym, name, _ in sells]
+        if buttons:
+            buttons.append({"text": "❌ 무시", "callback_data": "usignore"})
+            self.send_buttons("\n".join(lines), buttons)
+        else:
+            self.send("\n".join(lines) + "\n\n오늘은 후보 없음. 현금 대기.")
+
+    def run_us_paper_settle(self) -> None:
+        """개장+3h20m: 예약분을 실시간 가격으로 장부 기록 + 손절(-7%) 자동 기록."""
+        resv = paper_us.pop_reservations()
+        try:
+            fx = paper_us.fx_rate()
+        except Exception:
+            fx = 0
+        results = []
+        for r in resv:
+            try:
+                price = paper_us.us_price(r["symbol"])
+            except Exception:
+                results.append(f"{r['symbol']} 가격조회 실패")
+                continue
+            if r["action"] == "buy":
+                results.append(paper_us.record_buy(r["symbol"], r["name"], price, fx)["msg"])
+            else:
+                results.append(paper_us.record_sell(r["symbol"], price, fx, "매도")["msg"])
+        # 손절 자동(-7%)
+        led = paper_us.load_ledger()
+        for sym, pos in list(led["positions"].items()):
+            try:
+                cur = paper_us.us_price(sym)
+            except Exception:
+                continue
+            if pos["avg_usd"] and (cur / pos["avg_usd"] - 1) <= -rules.STOP_LOSS_PCT:
+                results.append(paper_us.record_sell(sym, cur, fx, "손절")["msg"])
+        if results:
+            self.send("🇺🇸 미국 페이퍼 기록 (개장 후 실시간가):\n" + "\n".join(results))
 
     # ----- 주간 재평가 (STEP 7, 지침서 v0.4 §3-2) -----
     def run_weekly_review(self) -> None:
@@ -391,10 +456,13 @@ class TradingBot:
         review_time = dtime(int(rh), int(rm))
         uh, um = rules.US_RECOMMEND_TIME.split(":")
         us_time = dtime(int(uh), int(um))
+        et_zone = ZoneInfo("America/New_York")
+        settle_et = dtime(12, 50)  # 미국 개장 09:30 ET + 3h20m = 12:50 ET (서머타임 자동)
         offset = None
         last_scan_date = None
         last_review_date = None
         last_us_date = None
+        last_settle_date = None
         last_risk = 0.0
         while True:
             now = datetime.now()
@@ -414,14 +482,23 @@ class TradingBot:
                     self.run_weekly_review()
                 except Exception as e:
                     print(f"[봇] 재평가 오류: {e!r}")
-            # 저녁 9시 미국주식 추천 (미국장 개장 전, 평일 1회)
+            # 밤 9시 미국 페이퍼 승인 알림 (KST, 평일 1회)
             if (now.weekday() < 5 and now.time() >= us_time
                     and last_us_date != now.date()):
                 last_us_date = now.date()
                 try:
-                    self.run_us_recommend()
+                    self.run_us_paper_alert()
                 except Exception as e:
-                    print(f"[봇] 미국 스캔 오류: {e!r}")
+                    print(f"[봇] 미국 알림 오류: {e!r}")
+            # 미국 개장+3h20m(12:50 ET) 예약 체결 기록 (미국 거래일 1회)
+            now_et = datetime.now(et_zone)
+            if (now_et.weekday() < 5 and now_et.time() >= settle_et
+                    and last_settle_date != now_et.date()):
+                last_settle_date = now_et.date()
+                try:
+                    self.run_us_paper_settle()
+                except Exception as e:
+                    print(f"[봇] 미국 체결 오류: {e!r}")
             # 장중 리스크 감시 (3분마다)
             if is_market_open(now) and time.time() - last_risk > 180:
                 last_risk = time.time()
@@ -472,6 +549,23 @@ class TradingBot:
             return
         if data == "hold":
             self.send("✅ 전체 보유 유지. 매도 안 함.")
+            return
+        if data == "usignore":
+            self.send("❌ 미국 후보 무시. 오늘 밤은 페이퍼 매매 안 함.")
+            return
+        if data.startswith("usbuy:"):  # 미국 페이퍼 매수 예약
+            sym = data.split(":", 1)[1]
+            from ..scanner import _us_meta
+            name = _us_meta(sym)[0]
+            paper_us.add_reservation("buy", sym, name)
+            self.send(f"📌 매수 예약: {name}({sym}) — 새벽 개장 후 실시간가로 장부 기록돼요.")
+            return
+        if data.startswith("ussell:"):  # 미국 페이퍼 매도 예약
+            sym = data.split(":", 1)[1]
+            led = paper_us.load_ledger()
+            name = led["positions"].get(sym, {}).get("name", sym)
+            paper_us.add_reservation("sell", sym, name)
+            self.send(f"📌 매도 예약: {name}({sym}) — 새벽 개장 후 기록돼요.")
             return
         if data.startswith("buy:"):
             code = data.split(":", 1)[1]

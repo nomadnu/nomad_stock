@@ -29,3 +29,5 @@ secrets.json
 # 봇 런타임 상태
 bot_state.json
 pending.json
+paper_us.json
+us_reservations.json
