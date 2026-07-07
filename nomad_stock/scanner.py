@@ -62,11 +62,9 @@ def _passes_daily(code: str) -> tuple[bool, dict]:
     close, vol = h["Close"], h["Volume"]
     last = close.iloc[-1]
     ma60 = close.rolling(rules.MA_TREND).mean().iloc[-1]
-    mid = close.rolling(20).mean()
-    std = close.rolling(20).std()
-    upper = (mid + 2 * std).iloc[-1]
+    mid20 = close.rolling(20).mean().iloc[-1]  # 볼린저 중심선(강세권 기준, 완화)
     vol_ok = vol.iloc[-1] > vol.rolling(20).mean().iloc[-1]
-    ok = bool(last > ma60 and last > upper and vol_ok)
+    ok = bool(last > ma60 and last > mid20 and vol_ok)
     info = {
         "ret5": round((last / close.iloc[-6] - 1) * 100, 1) if len(close) > 6 else 0.0,
         "ret20": round((last / close.iloc[-21] - 1) * 100, 1) if len(close) > 21 else 0.0,
@@ -161,11 +159,9 @@ def scan_us(max_candidates: int = 5) -> list[dict]:
         close, vol = h["Close"], h["Volume"]
         last = close.iloc[-1]
         ma60 = close.rolling(rules.MA_TREND).mean().iloc[-1]
-        mid = close.rolling(20).mean()
-        std = close.rolling(20).std()
-        upper = (mid + 2 * std).iloc[-1]
+        mid20 = close.rolling(20).mean().iloc[-1]  # 볼린저 중심선(강세권, 완화)
         vol_ok = vol.iloc[-1] > vol.rolling(20).mean().iloc[-1]
-        if not (last > ma60 and last > upper and vol_ok):
+        if not (last > ma60 and last > mid20 and vol_ok):
             continue
         name, sector = _us_meta(sym)
         cands.append(
