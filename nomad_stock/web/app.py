@@ -142,6 +142,15 @@ def create_app() -> Flask:
         except Exception as ex:  # KIS와 무관(FDR)이지만 안전하게 JSON으로
             return jsonify({"error": str(ex)}), 200
 
+    @app.route("/api/long")
+    @login_required
+    def api_long():
+        from .. import paper_long
+        try:
+            return jsonify(paper_long.evaluate())
+        except Exception as ex:
+            return jsonify({"error": str(ex)}), 200
+
     @app.route("/manifest.json")
     def manifest():
         # PWA 매니페스트 (안드로이드 홈화면 아이콘). 로그인 불필요.
@@ -232,7 +241,8 @@ _HTML = """<!doctype html>
   <h1>📈 nomad_stock 대시보드 <span class="muted" id="badge"></span></h1>
   <div class="tabs">
     <button class="tab active" id="tabbtn-kr" onclick="showTab('kr')">🇰🇷 한국</button>
-    <button class="tab" id="tabbtn-us" onclick="showTab('us')">🇺🇸 미국 (페이퍼)</button>
+    <button class="tab" id="tabbtn-us" onclick="showTab('us')">🇺🇸 미국 (단기)</button>
+    <button class="tab" id="tabbtn-long" onclick="showTab('long')">📗 장기</button>
   </div>
 
   <div id="tab-kr">
@@ -270,6 +280,22 @@ _HTML = """<!doctype html>
     </div>
     <div class="muted" style="margin-top:6px">※ 앱 내부 가상 장부 (실제 주문 없음) · 손익에 환율 변동 포함</div>
   </div>
+
+  <div id="tab-long" style="display:none">
+    <div class="muted" id="long-meta">불러오는 중…</div>
+    <div class="cards">
+      <div class="card"><div class="label">총평가 (USD / 원)</div><div class="val" id="long-total" style="font-size:17px">-</div></div>
+      <div class="card"><div class="label">원금대비 손익</div><div class="val" id="long-pnl">-</div></div>
+      <div class="card"><div class="label">S&amp;P500 대비 초과</div><div class="val" id="long-excess">-</div></div>
+    </div>
+    <div class="row">
+      <div class="sec" style="flex:2"><h2>보유 종목 (장기·5종목 집중)</h2><table id="long-holdings">
+        <thead><tr><th>종목</th><th>수량</th><th>평균$</th><th>현재$</th><th>평가$</th><th>손익률</th></tr></thead>
+        <tbody></tbody></table><div class="muted" id="long-noh" style="display:none">보유 없음 (3박자 통과 없으면 억지 편입 안 함)</div></div>
+      <div class="sec" style="flex:1"><h2>비중</h2><canvas id="long-pie" height="220"></canvas></div>
+    </div>
+    <div class="muted" style="margin-top:6px">※ 롱온리 5종목 집중 · 손절 없음(근거 훼손 시만) · 실제 주문 없음</div>
+  </div>
   <div style="margin:14px 0"><button onclick="refresh()">새로고침</button>
     {% if auth %}<a href="/logout" style="color:#8a98b4;font-size:13px;margin-left:10px">로그아웃</a>{% endif %}
     <span class="muted" id="updated"></span></div>
@@ -278,7 +304,7 @@ _HTML = """<!doctype html>
 const won = n => (n==null?'-':Math.round(n).toLocaleString('ko-KR')+'원');
 const cls = v => v>0?'up':(v<0?'down':'');
 const sign = v => (v>0?'+':'')+v.toFixed(2)+'%';
-let krPie, usPie, curTab='kr';
+let krPie, usPie, longPie, curTab='kr';
 async function loadKR(){
   try{
     const s = await (await fetch('/api/summary')).json();
@@ -321,6 +347,24 @@ async function loadUS(){
     stamp();
   }catch(e){ document.getElementById('us-meta').textContent='미국 조회 실패: '+e; }
 }
+async function loadLong(){
+  try{
+    const u = await (await fetch('/api/long')).json();
+    if(u.error){ document.getElementById('long-meta').textContent='조회 실패: '+u.error; return; }
+    document.getElementById('long-meta').textContent = '장기 페이퍼 · 시작 '+u.start_date+' · 환율 '+Math.round(u.fx);
+    document.getElementById('long-total').textContent = '$'+Math.round(u.total_usd).toLocaleString()+' / '+won(u.total_krw);
+    const p = document.getElementById('long-pnl'); p.textContent = won(u.pnl_krw); p.className='val '+cls(u.pnl_krw);
+    const ex = document.getElementById('long-excess'); ex.textContent=(u.excess>0?'+':'')+u.excess.toFixed(1)+'%p'; ex.className='val '+cls(u.excess);
+    const tb = document.querySelector('#long-holdings tbody'); tb.innerHTML='';
+    document.getElementById('long-noh').style.display = u.rows.length?'none':'block';
+    u.rows.forEach(r=>{ const val=r.qty*r.cur_usd;
+      tb.innerHTML += `<tr><td>${r.name}<br><span class="muted">${r.symbol}</span></td>
+        <td>${r.qty}</td><td>$${r.avg_usd}</td><td>$${r.cur_usd}</td>
+        <td>$${Math.round(val).toLocaleString()}</td><td class="${cls(r.pct)}">${sign(r.pct)}</td></tr>`; });
+    longPie = drawPie('long-pie', longPie, u.rows.map(r=>r.name), u.rows.map(r=>r.qty*r.cur_usd), u.cash_usd);
+    stamp();
+  }catch(e){ document.getElementById('long-meta').textContent='장기 조회 실패: '+e; }
+}
 function drawPie(canvasId, chart, labels, data, cash){
   labels = labels.concat(['현금']); data = data.concat([cash]);
   const colors = ['#4fd1a5','#3d8bff','#ff5a5a','#f7b731','#a55eea','#26de81','#778ca3','#fd9644'];
@@ -332,13 +376,13 @@ function drawPie(canvasId, chart, labels, data, cash){
 function stamp(){ document.getElementById('updated').textContent='갱신: '+new Date().toLocaleTimeString('ko-KR'); }
 function showTab(name){
   curTab=name;
-  document.getElementById('tab-kr').style.display = name==='kr'?'':'none';
-  document.getElementById('tab-us').style.display = name==='us'?'':'none';
-  document.getElementById('tabbtn-kr').className = 'tab'+(name==='kr'?' active':'');
-  document.getElementById('tabbtn-us').className = 'tab'+(name==='us'?' active':'');
+  ['kr','us','long'].forEach(t=>{
+    document.getElementById('tab-'+t).style.display = name===t?'':'none';
+    document.getElementById('tabbtn-'+t).className = 'tab'+(name===t?' active':'');
+  });
   refresh();
 }
-function refresh(){ if(curTab==='kr') loadKR(); else loadUS(); }
+function refresh(){ if(curTab==='kr') loadKR(); else if(curTab==='us') loadUS(); else loadLong(); }
 loadKR(); setInterval(refresh, 30000);
 </script>
 </body></html>"""
