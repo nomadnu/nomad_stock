@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 
-from .. import paper_us, rules
+from .. import paper_long, paper_us, rules
 from ..broker import KISClient
 from ..live.market_hours import is_market_open, market_status
 from ..live.risk import RiskConfig, RiskManager
@@ -87,6 +87,14 @@ class TradingBot:
             return "🇺🇸 미국 페이퍼 알림을 실행했어요 (위 결과 확인)."
         if cmd in ("미국잔고", "미국계좌", "usbalance"):
             return paper_us.format_balance()
+        if cmd in ("장기", "장기편입", "long"):
+            self.run_long_alert()
+            return "📗 장기 편입 후보를 스캔했어요 (위 결과)."
+        if cmd in ("장기잔고", "장기계좌"):
+            return paper_long.format_balance()
+        if cmd in ("장기점검", "분기점검"):
+            self.run_long_review()
+            return "📗 장기 분기 점검을 실행했어요 (위 결과)."
         if cmd in ("도움말", "명령", "help", "?", "start"):
             return self.help_text()
         return "모르는 명령이에요.\n" + self.help_text()
@@ -103,6 +111,8 @@ class TradingBot:
             "• 재평가 — 보유종목 주간 점검 (수동 실행)\n"
             "• 미국 — 미국 페이퍼 후보 알림 (매수/매도 승인)\n"
             "• 미국잔고 — 미국 페이퍼 계좌 (달러·원화)\n"
+            "• 장기 — 미국 장기 3박자 편입 후보\n"
+            "• 장기잔고 — 장기 계좌 (S&P500 대비 초과수익)\n"
             "• 정지 / 재개 — 자동매매 킬스위치\n"
             "• 원금변경 [금액] — 운용원금 변경\n"
             "• myid — 내 chat_id 확인\n"
@@ -358,6 +368,69 @@ class TradingBot:
         if results:
             self.send("🇺🇸 미국 페이퍼 기록 (개장 후 실시간가):\n" + "\n".join(results))
 
+    # ----- 미국 장기투자 (트랙 C, 3박자 필터 / 손절 없음 / 별도 장부) -----
+    def run_long_alert(self) -> None:
+        """3박자 통과 장기 편입 후보 → 편입 승인 버튼."""
+        self.send("📗 장기 3박자 필터 스캔 중... (재무지표 조회, 1~2분)")
+        try:
+            from ..scanner_long import format_long_candidates, scan_long
+            cands = scan_long()
+        except Exception as e:
+            self.send(f"장기 스캔 실패: {e}")
+            return
+        text = format_long_candidates(cands)
+        if cands:
+            buttons = [{"text": f"📗편입 {c['name'][:12]}", "callback_data": f"longbuy:{c['symbol']}"} for c in cands]
+            buttons.append({"text": "❌ 보류", "callback_data": "longignore"})
+            self.send_buttons(text, buttons)
+        else:
+            self.send(text)
+
+    def execute_long_buy(self, sym: str, name: str) -> str:
+        try:
+            price, fx = paper_us.us_price(sym), paper_us.fx_rate()
+        except Exception as e:
+            return f"가격조회 실패: {e}"
+        return paper_long.record_buy(sym, name, price, fx)["msg"]
+
+    def execute_long_sell(self, sym: str) -> str:
+        try:
+            price, fx = paper_us.us_price(sym), paper_us.fx_rate()
+        except Exception as e:
+            return f"가격조회 실패: {e}"
+        return paper_long.record_sell(sym, price, fx)["msg"]
+
+    def run_long_review(self) -> None:
+        """분기 점검: 보유 종목의 3박자(편입 근거)를 재확인 → 훼손 시 매도 검토."""
+        led = paper_long.load_ledger()
+        if not led["positions"]:
+            self.send("📗 장기 분기 점검: 보유 종목 없음.")
+            return
+        import yfinance as yf
+
+        from ..scanner_long import pass_3factor
+        lines = ["📗 장기 분기 점검 (편입 근거 유효성)"]
+        sells = []
+        for sym, pos in led["positions"].items():
+            try:
+                ok, m = pass_3factor(yf.Ticker(sym).info)
+            except Exception:
+                ok, m = True, {}
+            if ok:
+                lines.append(f"• {pos['name']}({sym}): 근거 유지 ✅")
+            else:
+                broken = [x for x, k in [("성장", "g_ok"), ("재무", "f_ok"), ("밸류", "v_ok")]
+                          if not m.get(k, True)]
+                lines.append(f"• {pos['name']}({sym}): {'·'.join(broken)} 훼손 ⚠️ → 매도 검토")
+                sells.append((sym, pos["name"]))
+        text = "\n".join(lines) + "\n\n※ 주가 하락이 아니라 '근거 훼손'만 매도 사유예요."
+        if sells:
+            buttons = [{"text": f"🔴매도 {name[:12]}", "callback_data": f"longsell:{sym}"} for sym, name in sells]
+            buttons.append({"text": "❌ 전체 보유", "callback_data": "longhold"})
+            self.send_buttons(text, buttons)
+        else:
+            self.send(text + "\n\n모두 근거 유지 — 계속 보유 권장.")
+
     # ----- 주간 재평가 (STEP 7, 지침서 v0.4 §3-2) -----
     def run_weekly_review(self) -> None:
         """금요일 마감 후: 보유종목 재평가 → 매도검토 종목 승인 매도 알림."""
@@ -463,6 +536,7 @@ class TradingBot:
         last_review_date = None
         last_us_date = None
         last_settle_date = None
+        last_quarter = None
         last_risk = 0.0
         while True:
             now = datetime.now()
@@ -499,6 +573,15 @@ class TradingBot:
                     self.run_us_paper_settle()
                 except Exception as e:
                     print(f"[봇] 미국 체결 오류: {e!r}")
+            # 트랙C 장기 분기 점검 (1·4·7·10월 초 1회)
+            qkey = f"{now.year}Q{(now.month - 1) // 3 + 1}"
+            if (now.month in (1, 4, 7, 10) and now.day <= 3
+                    and now.time() >= dtime(9, 0) and last_quarter != qkey):
+                last_quarter = qkey
+                try:
+                    self.run_long_review()
+                except Exception as e:
+                    print(f"[봇] 장기 점검 오류: {e!r}")
             # 장중 리스크 감시 (3분마다)
             if is_market_open(now) and time.time() - last_risk > 180:
                 last_risk = time.time()
@@ -566,6 +649,23 @@ class TradingBot:
             name = led["positions"].get(sym, {}).get("name", sym)
             paper_us.add_reservation("sell", sym, name)
             self.send(f"📌 매도 예약: {name}({sym}) — 새벽 개장 후 기록돼요.")
+            return
+        if data == "longignore":
+            self.send("📗 보류. 이번엔 편입 안 함.")
+            return
+        if data == "longhold":
+            self.send("📗 전체 보유 유지 (장기).")
+            return
+        if data.startswith("longbuy:"):  # 트랙 C 장기 편입 (즉시 기록)
+            sym = data.split(":", 1)[1]
+            from ..scanner import _us_meta
+            name = _us_meta(sym)[0]
+            self.send(f"편입 처리 중... ({sym})")
+            self.send(self.execute_long_buy(sym, name))
+            return
+        if data.startswith("longsell:"):  # 트랙 C 장기 매도(근거 훼손)
+            sym = data.split(":", 1)[1]
+            self.send(self.execute_long_sell(sym))
             return
         if data.startswith("buy:"):
             code = data.split(":", 1)[1]

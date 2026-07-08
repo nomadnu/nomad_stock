@@ -31,3 +31,4 @@ bot_state.json
 pending.json
 paper_us.json
 us_reservations.json
+_cacert.pem
