@@ -529,6 +529,8 @@ class TradingBot:
         review_time = dtime(int(rh), int(rm))
         uh, um = rules.US_RECOMMEND_TIME.split(":")
         us_time = dtime(int(uh), int(um))
+        lh, lm = rules.LONG_ALERT_TIME.split(":")
+        long_time = dtime(int(lh), int(lm))
         et_zone = ZoneInfo("America/New_York")
         settle_et = dtime(12, 50)  # 미국 개장 09:30 ET + 3h20m = 12:50 ET (서머타임 자동)
         offset = None
@@ -536,6 +538,7 @@ class TradingBot:
         last_review_date = None
         last_us_date = None
         last_settle_date = None
+        last_long_date = None
         last_quarter = None
         last_risk = 0.0
         while True:
@@ -573,6 +576,14 @@ class TradingBot:
                     self.run_us_paper_settle()
                 except Exception as e:
                     print(f"[봇] 미국 체결 오류: {e!r}")
+            # 트랙C 장기 편입 알림 (매주 목요일 밤 9시, 주 1회)
+            if (now.weekday() == rules.LONG_ALERT_DAY and now.time() >= long_time
+                    and last_long_date != now.date()):
+                last_long_date = now.date()
+                try:
+                    self.run_long_alert()
+                except Exception as e:
+                    print(f"[봇] 장기 알림 오류: {e!r}")
             # 트랙C 장기 분기 점검 (1·4·7·10월 초 1회)
             qkey = f"{now.year}Q{(now.month - 1) // 3 + 1}"
             if (now.month in (1, 4, 7, 10) and now.day <= 3
