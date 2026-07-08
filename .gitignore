@@ -32,3 +32,6 @@ pending.json
 paper_us.json
 us_reservations.json
 _cacert.pem
+state/
+long_reservations.json
+paper_long.json

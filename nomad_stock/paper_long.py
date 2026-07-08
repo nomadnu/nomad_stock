@@ -18,7 +18,34 @@ from . import rules
 from .paper_us import _STATE_DIR, fx_rate, us_price
 
 _LEDGER_PATH = os.path.join(_STATE_DIR, "paper_long.json")
+_RESV_PATH = os.path.join(_STATE_DIR, "long_reservations.json")
 MAX_POSITIONS = 5
+
+
+# ----- 예약 (승인 → 개장+3h20m 기록, 트랙B와 동일 시각) -----
+def add_reservation(action: str, symbol: str, name: str) -> None:
+    items = _load_resv()
+    items = [x for x in items if not (x["symbol"] == symbol and x["action"] == action)]
+    items.append({"action": action, "symbol": symbol, "name": name})
+    with open(_RESV_PATH, "w", encoding="utf-8") as f:
+        json.dump({"items": items}, f, ensure_ascii=False, indent=2)
+
+
+def _load_resv() -> list:
+    if os.path.exists(_RESV_PATH):
+        try:
+            with open(_RESV_PATH, encoding="utf-8") as f:
+                return json.load(f).get("items", [])
+        except json.JSONDecodeError:
+            pass
+    return []
+
+
+def pop_reservations() -> list:
+    items = _load_resv()
+    with open(_RESV_PATH, "w", encoding="utf-8") as f:
+        json.dump({"items": []}, f)
+    return items
 
 
 def spx_level() -> float:

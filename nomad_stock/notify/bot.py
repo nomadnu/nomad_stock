@@ -386,19 +386,28 @@ class TradingBot:
         else:
             self.send(text)
 
-    def execute_long_buy(self, sym: str, name: str) -> str:
+    def run_long_settle(self) -> None:
+        """장기 편입/매도 예약을 개장 후 실시간 가격으로 기록 (트랙B와 동일 시각)."""
+        resv = paper_long.pop_reservations()
+        if not resv:
+            return
         try:
-            price, fx = paper_us.us_price(sym), paper_us.fx_rate()
-        except Exception as e:
-            return f"가격조회 실패: {e}"
-        return paper_long.record_buy(sym, name, price, fx)["msg"]
-
-    def execute_long_sell(self, sym: str) -> str:
-        try:
-            price, fx = paper_us.us_price(sym), paper_us.fx_rate()
-        except Exception as e:
-            return f"가격조회 실패: {e}"
-        return paper_long.record_sell(sym, price, fx)["msg"]
+            fx = paper_us.fx_rate()
+        except Exception:
+            fx = 0
+        results = []
+        for r in resv:
+            try:
+                price = paper_us.us_price(r["symbol"])
+            except Exception:
+                results.append(f"{r['symbol']} 가격조회 실패")
+                continue
+            if r["action"] == "buy":
+                results.append(paper_long.record_buy(r["symbol"], r["name"], price, fx)["msg"])
+            else:
+                results.append(paper_long.record_sell(r["symbol"], price, fx)["msg"])
+        if results:
+            self.send("📗 장기 기록 (개장 후 실시간가):\n" + "\n".join(results))
 
     def run_long_review(self) -> None:
         """분기 점검: 보유 종목의 3박자(편입 근거)를 재확인 → 훼손 시 매도 검토."""
@@ -574,6 +583,7 @@ class TradingBot:
                 last_settle_date = now_et.date()
                 try:
                     self.run_us_paper_settle()
+                    self.run_long_settle()   # 트랙C도 같은 시각(개장 후) 체결
                 except Exception as e:
                     print(f"[봇] 미국 체결 오류: {e!r}")
             # 트랙C 장기 편입 알림 (매주 목요일 밤 9시, 주 1회)
@@ -667,16 +677,19 @@ class TradingBot:
         if data == "longhold":
             self.send("📗 전체 보유 유지 (장기).")
             return
-        if data.startswith("longbuy:"):  # 트랙 C 장기 편입 (즉시 기록)
+        if data.startswith("longbuy:"):  # 트랙 C 장기 편입 예약 (개장 후 기록)
             sym = data.split(":", 1)[1]
             from ..scanner import _us_meta
             name = _us_meta(sym)[0]
-            self.send(f"편입 처리 중... ({sym})")
-            self.send(self.execute_long_buy(sym, name))
+            paper_long.add_reservation("buy", sym, name)
+            self.send(f"📌 장기 편입 예약: {name}({sym}) — 새벽 개장 후 실시간가로 기록돼요.")
             return
-        if data.startswith("longsell:"):  # 트랙 C 장기 매도(근거 훼손)
+        if data.startswith("longsell:"):  # 트랙 C 장기 매도 예약 (개장 후 기록)
             sym = data.split(":", 1)[1]
-            self.send(self.execute_long_sell(sym))
+            led = paper_long.load_ledger()
+            name = led["positions"].get(sym, {}).get("name", sym)
+            paper_long.add_reservation("sell", sym, name)
+            self.send(f"📌 장기 매도 예약: {name}({sym}) — 새벽 개장 후 기록돼요.")
             return
         if data.startswith("buy:"):
             code = data.split(":", 1)[1]
