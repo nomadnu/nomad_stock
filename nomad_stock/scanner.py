@@ -197,6 +197,58 @@ def format_us_candidates(cands: list[dict]) -> str:
     return "\n".join(lines)
 
 
+# ===== 트랙 D: 역추세 (볼린저 하단 + RSI 과매도) =====
+def scan_d(max_candidates: int = 3, exclude: set | None = None) -> list[dict]:
+    """역추세 후보: 볼린저 하단 근처 + RSI 과매도. exclude=보유종목(물타기 금지)."""
+    from .strategy.rsi import rsi
+
+    exclude = exclude or set()
+    cands = []
+    for sym in US_SYMBOLS:
+        if sym in exclude:  # 물타기 금지
+            continue
+        try:
+            h = fdr.DataReader(sym, "2024-06-01")
+        except Exception:
+            continue
+        if len(h) < 30:
+            continue
+        close = h["Close"]
+        last = close.iloc[-1]
+        mid = close.rolling(20).mean()
+        std = close.rolling(20).std()
+        lower = (mid - 2 * std).iloc[-1]
+        r = float(rsi(close, 14).iloc[-1])
+        if not (last <= lower * 1.03 and r <= 30):  # 하단 근처 + 과매도
+            continue
+        name, sector = _us_meta(sym)
+        cands.append({
+            "symbol": sym, "name": name, "sector": sector,
+            "price": round(float(last), 2), "rsi": round(r, 1),
+            "lower": round(float(lower), 2),
+            "ret5": round((last / close.iloc[-6] - 1) * 100, 1) if len(close) > 6 else 0.0,
+        })
+    cands.sort(key=lambda c: c["rsi"])  # 과매도 심한(RSI 낮은) 순
+    return cands[:max_candidates]
+
+
+def evaluate_d_holding(symbol: str, avg_usd: float) -> tuple[str, str]:
+    """역추세 보유 판정: 손절 -7% / 익절(20일선 회복) / 보유."""
+    try:
+        df = fdr.DataReader(symbol, "2024-06-01")
+    except Exception:
+        return "보유", "시세 조회 실패"
+    close = df["Close"]
+    last = close.iloc[-1]
+    pnl = (last / avg_usd - 1) * 100 if avg_usd else 0
+    if pnl <= -rules.STOP_LOSS_PCT * 100:
+        return "손절", f"손절선 도달 {pnl:+.1f}%"
+    mid20 = close.rolling(20).mean().iloc[-1]
+    if last >= mid20:  # 20일선 회복 = 반등 익절 검토
+        return "익절검토", f"20일선 회복 (반등 {pnl:+.1f}%)"
+    return "보유", f"반등 대기 {pnl:+.1f}%"
+
+
 def format_candidates(cands: list[dict]) -> str:
     """승인 알림용 텍스트 (판단 보조 정보 포함)."""
     if not cands:

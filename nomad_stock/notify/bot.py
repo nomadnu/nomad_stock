@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 
-from .. import paper_long, paper_us, rules
+from .. import paper_long, paper_track_d, paper_us, rules
 from ..broker import KISClient
 from ..live.market_hours import is_market_open, market_status
 from ..live.risk import RiskConfig, RiskManager
@@ -87,6 +87,11 @@ class TradingBot:
             return "🇺🇸 미국 페이퍼 알림을 실행했어요 (위 결과 확인)."
         if cmd in ("미국잔고", "미국계좌", "usbalance"):
             return paper_us.format_balance()
+        if cmd in ("역추세", "역추세잔고", "d"):
+            self.run_d_alert()
+            return "🔄 역추세 알림을 실행했어요 (위 결과 확인)."
+        if cmd in ("역추세계좌", "d잔고", "dbalance"):
+            return paper_track_d.format_balance()
         if cmd in ("장기", "장기편입", "long"):
             self.run_long_alert()
             return "📗 장기 편입 후보를 스캔했어요 (위 결과)."
@@ -386,6 +391,72 @@ class TradingBot:
         else:
             self.send(text)
 
+    # ----- 트랙 D 역추세 (밤9시 추천 → 개장 후 체결, 손절 자동) -----
+    def run_d_alert(self) -> None:
+        """밤 9시: 역추세 매수후보(물타기 금지) + 보유 익절/손절 후보. 개장 후 체결 예약."""
+        st = rules.load_state()
+        if st.halted:
+            return
+        from ..scanner import evaluate_d_holding, scan_d
+        try:
+            buys = scan_d(exclude=paper_track_d.held_symbols())
+            fx = paper_us.fx_rate()
+        except Exception as e:
+            self.send(f"역추세 스캔 실패: {e}")
+            return
+        led = paper_track_d.load_ledger()
+        sells = []
+        for sym, pos in led["positions"].items():
+            status, reason = evaluate_d_holding(sym, pos["avg_usd"])
+            if status in ("익절검토", "손절"):
+                sells.append((sym, pos["name"], f"{status}: {reason}"))
+        lines = [f"🔄 역추세(트랙D) 페이퍼 (밤 9시 · 환율 {fx:.0f})"]
+        lines.append("\n[매수 후보] 볼린저 하단+과매도 (RSI 낮은순)" if buys else "\n매수 후보 없음")
+        for c in buys:
+            lines.append(f"• {c['name']}({c['symbol']}) ${c['price']} · RSI {c['rsi']} (하단 ${c['lower']})")
+        if sells:
+            lines.append("\n[매도 후보(보유중)]")
+            for sym, name, reason in sells:
+                lines.append(f"• {name}({sym}): {reason}")
+        lines.append("\n승인분은 새벽 개장 후 실시간가로 기록. 손절 -7%는 자동.")
+        buttons = [{"text": f"✅매수 {c['name'][:12]}", "callback_data": f"dbuy:{c['symbol']}"} for c in buys]
+        buttons += [{"text": f"🔴매도 {name[:12]}", "callback_data": f"dsell:{sym}"} for sym, name, _ in sells]
+        if buttons:
+            buttons.append({"text": "❌ 무시", "callback_data": "dignore"})
+            self.send_buttons("\n".join(lines), buttons)
+        else:
+            self.send("\n".join(lines) + "\n\n오늘은 후보 없음. 현금 대기.")
+
+    def run_d_settle(self) -> None:
+        """역추세 예약을 개장 후 실시간가로 기록 + 손절(-7%) 자동."""
+        resv = paper_track_d.pop_reservations()
+        try:
+            fx = paper_us.fx_rate()
+        except Exception:
+            fx = 0
+        results = []
+        for r in resv:
+            try:
+                price = paper_us.us_price(r["symbol"])
+            except Exception:
+                results.append(f"{r['symbol']} 가격조회 실패")
+                continue
+            if r["action"] == "buy":
+                results.append(paper_track_d.record_buy(r["symbol"], r["name"], price, fx)["msg"])
+            else:
+                results.append(paper_track_d.record_sell(r["symbol"], price, fx, "매도")["msg"])
+        # 손절 자동(-7%)
+        led = paper_track_d.load_ledger()
+        for sym, pos in list(led["positions"].items()):
+            try:
+                cur = paper_us.us_price(sym)
+            except Exception:
+                continue
+            if pos["avg_usd"] and (cur / pos["avg_usd"] - 1) <= -rules.STOP_LOSS_PCT:
+                results.append(paper_track_d.record_sell(sym, cur, fx, "손절")["msg"])
+        if results:
+            self.send("🔄 역추세 기록 (개장 후 실시간가):\n" + "\n".join(results))
+
     def run_long_settle(self) -> None:
         """장기 편입/매도 예약을 개장 후 실시간 가격으로 기록 (트랙B와 동일 시각)."""
         resv = paper_long.pop_reservations()
@@ -574,6 +645,7 @@ class TradingBot:
                 last_us_date = now.date()
                 try:
                     self.run_us_paper_alert()
+                    self.run_d_alert()   # 트랙D 역추세도 밤9시
                 except Exception as e:
                     print(f"[봇] 미국 알림 오류: {e!r}")
             # 미국 개장+3h20m(12:50 ET) 예약 체결 기록 (미국 거래일 1회)
@@ -584,6 +656,7 @@ class TradingBot:
                 try:
                     self.run_us_paper_settle()
                     self.run_long_settle()   # 트랙C도 같은 시각(개장 후) 체결
+                    self.run_d_settle()      # 트랙D 역추세도 같은 시각
                 except Exception as e:
                     print(f"[봇] 미국 체결 오류: {e!r}")
             # 트랙C 장기 편입 알림 (매주 목요일 밤 9시, 주 1회)
@@ -656,6 +729,21 @@ class TradingBot:
             return
         if data == "usignore":
             self.send("❌ 미국 후보 무시. 오늘 밤은 페이퍼 매매 안 함.")
+            return
+        if data == "dignore":
+            self.send("❌ 역추세 후보 무시.")
+            return
+        if data.startswith("dbuy:"):  # 트랙 D 역추세 매수 예약
+            sym = data.split(":", 1)[1]
+            from ..scanner import _us_meta
+            paper_track_d.add_reservation("buy", sym, _us_meta(sym)[0])
+            self.send(f"📌 역추세 매수 예약: {sym} — 새벽 개장 후 기록.")
+            return
+        if data.startswith("dsell:"):  # 트랙 D 역추세 매도 예약
+            sym = data.split(":", 1)[1]
+            name = paper_track_d.load_ledger()["positions"].get(sym, {}).get("name", sym)
+            paper_track_d.add_reservation("sell", sym, name)
+            self.send(f"📌 역추세 매도 예약: {name}({sym}) — 새벽 개장 후 기록.")
             return
         if data.startswith("usbuy:"):  # 미국 페이퍼 매수 예약
             sym = data.split(":", 1)[1]
