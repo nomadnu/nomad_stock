@@ -37,6 +37,39 @@ def fx_rate() -> float:
     return round(float(df["Close"].iloc[-1]), 2)
 
 
+def index_return(ticker: str, start: str):
+    """지수 start~현재 수익률(%). 시작 구간 이상치(튀는 값) 완화: 앞 3개 종가 중앙값을 기준.
+
+    한국 지수(FDR)는 가끔 하루짜리 튀는 값이 있어, 시작일 하나에 좌우되지 않도록
+    앞부분 여러 종가의 중앙값을 베이스로 쓴다. 조회 실패/데이터 없음이면 None.
+    """
+    try:
+        df = fdr.DataReader(ticker, start)
+        closes = [float(x) for x in df["Close"].tolist() if x == x]  # NaN 제외
+        if not closes:
+            return None
+        head = sorted(closes[: min(3, len(closes))])
+        base = head[len(head) // 2]  # 중앙값
+        if base <= 0:
+            return None
+        return (closes[-1] / base - 1) * 100
+    except Exception:
+        return None
+
+
+def ledger_start(ledger: dict):
+    """장부의 매매 시작일(가장 이른 거래·편입일 'YYYY-MM-DD'). 거래 없으면 None."""
+    dates = []
+    for h in ledger.get("history", []):
+        t = h.get("t", "")
+        if t:
+            dates.append(t[:10])
+    for pos in ledger.get("positions", {}).values():
+        if pos.get("buy_date"):
+            dates.append(pos["buy_date"])
+    return min(dates) if dates else None
+
+
 # ----- 장부 상태 -----
 def load_ledger() -> dict:
     if os.path.exists(_LEDGER_PATH):

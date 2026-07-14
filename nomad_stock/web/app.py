@@ -155,7 +155,7 @@ def create_app() -> Flask:
     @login_required
     def api_all():
         # 4트랙 종합 (A=한국KIS, B/C/D=페이퍼 장부). 비교 대시보드용.
-        from .. import paper_long, paper_track_d, paper_us
+        from .. import paper_long, paper_track_d, paper_us, rules
         cap = 10_000_000
         tracks, holds = [], []
 
@@ -195,10 +195,41 @@ def create_app() -> Flask:
         tracks.append(paper("C", "펀더멘털", "3박자 필터 · 장기 · 페이퍼", paper_long, spx=True))
         tracks.append(paper("D", "역추세", "볼린저 하단·RSI 과매도 · 페이퍼", paper_track_d))
 
+        # ----- 트랙별 시장(벤치마크) 대비 비교 : 각 트랙 시작일 기준 -----
+        try:
+            starts = {
+                "A": rules.TRACK_A_START,
+                "B": paper_us.ledger_start(paper_us.load_ledger()),
+                "C": (paper_long.load_ledger().get("start_date")
+                      or paper_us.ledger_start(paper_long.load_ledger())),
+                "D": paper_us.ledger_start(paper_track_d.load_ledger()),
+            }
+        except Exception:
+            starts = {}
+        bench_tk = {"A": ("KS200", "코스피200"), "B": ("US500", "S&P500"),
+                    "C": ("US500", "S&P500"), "D": ("US500", "S&P500")}
+        bvals = []
+        for t in tracks:
+            tk, bname = bench_tk[t["id"]]
+            t["bench_name"] = bname
+            start = starts.get(t["id"])
+            if start and not t.get("error"):
+                br = paper_us.index_return(tk, start)
+                if br is not None:
+                    t["bench"] = round(br, 2)
+                    t["edge"] = round(t["ret"] - br, 2)
+                    if t["id"] == "A":
+                        t["bench_warn"] = True   # 한국 무료지수 데이터 불안정 → 참고용 경고
+                    else:
+                        bvals.append(br)         # 총 시장평균엔 신뢰 가능한 미국(S&P500)만
+
         total_eval = sum(t.get("eval", t["cap"]) for t in tracks)
         total_cap = sum(t["cap"] for t in tracks)
+        total_ret = (total_eval / total_cap - 1) * 100 if total_cap else 0
+        total_bench = round(sum(bvals) / len(bvals), 2) if bvals else None
         return jsonify({"tracks": tracks, "holdings": holds, "total_cap": total_cap,
-                        "total_eval": total_eval, "total_pnl": total_eval - total_cap})
+                        "total_eval": total_eval, "total_pnl": total_eval - total_cap,
+                        "total_ret": round(total_ret, 2), "total_bench": total_bench})
 
     @app.route("/manifest.json")
     def manifest():
@@ -261,40 +292,47 @@ _HTML = """<!doctype html>
 <meta name="apple-mobile-web-app-title" content="nomad_stock">
 <meta name="theme-color" content="#0e1116">
 <style>
-:root{--bg:#0e1116;--panel:#161b22;--panel-2:#1c232d;--line:#26303c;--ink:#e6edf3;--ink-dim:#8b98a5;--ink-faint:#5b6570;--up:#3fb950;--down:#f85149;--A:#4c8dff;--B:#5ac8fa;--C:#c07cff;--D:#ffb454;--mono:ui-monospace,Menlo,Consolas,monospace}
+:root{--bg:#0e1116;--panel:#161b22;--panel-2:#1c232d;--line:#26303c;--ink:#e6edf3;--ink-dim:#8b98a5;--ink-faint:#5b6570;--up:#3fb950;--down:#f85149;--A:#4c8dff;--B:#5ac8fa;--C:#c07cff;--D:#ffb454;--mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'Malgun Gothic',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--ink);padding:18px 14px 40px;max-width:920px;margin:0 auto}
+body{font-family:'Malgun Gothic',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--ink);padding:20px 14px 44px;max-width:920px;margin:0 auto}
 .num{font-family:var(--mono);letter-spacing:-.02em} .up{color:var(--up)} .down{color:var(--down)}
-header{display:flex;justify-content:space-between;align-items:flex-end;padding-bottom:14px;border-bottom:1px solid var(--line);margin-bottom:18px;flex-wrap:wrap;gap:8px}
+header{display:flex;justify-content:space-between;align-items:flex-end;padding-bottom:16px;border-bottom:1px solid var(--line);margin-bottom:20px;flex-wrap:wrap;gap:8px}
 .title{font-size:19px;font-weight:700} .subtitle{font-size:12px;color:var(--ink-faint);margin-top:3px}
 .asof{font-size:12px;color:var(--ink-dim);text-align:right} .asof .t{font-family:var(--mono);color:var(--ink);font-size:13px}
-.total{display:flex;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;margin-bottom:20px}
-.total>div{flex:1;padding:13px 15px;border-right:1px solid var(--line)} .total>div:last-child{border-right:0}
-.total .k{font-size:11px;color:var(--ink-dim);margin-bottom:5px} .total .v{font-size:19px;font-weight:700} .total .v.sub{font-size:14px}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:11px} @media(max-width:560px){.grid{grid-template-columns:1fr}}
+.total{display:flex;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;margin-bottom:22px}
+.total>div{flex:1;padding:14px 16px;border-right:1px solid var(--line)} .total>div:last-child{border-right:0}
+.total .k{font-size:11px;color:var(--ink-dim);margin-bottom:6px} .total .v{font-size:20px;font-weight:700} .total .v.sub{font-size:15px}
+.total .v .mkt{font-size:13px;color:var(--ink-dim);font-weight:600}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px} @media(max-width:560px){.grid{grid-template-columns:1fr}}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
-.spine{height:3px;width:100%} .cbody{padding:14px 15px 15px}
+.spine{height:3px;width:100%} .cbody{padding:15px 16px 16px}
 .tag{font-size:10px;font-weight:700;letter-spacing:.04em;padding:2px 7px;border-radius:5px;color:#0e1116}
 .card h3{font-size:15px;font-weight:700;margin-top:9px} .method{font-size:11px;color:var(--ink-dim);margin-top:2px}
-.ret{font-size:25px;font-weight:800;margin:11px 0 2px}
-.evalline{font-size:12px;color:var(--ink-dim)} .evalline .num{color:var(--ink)}
+.ret{font-size:26px;font-weight:800;margin:12px 0 2px;display:flex;align-items:baseline;flex-wrap:wrap;gap:7px}
+.mkt{font-size:14px;font-weight:600;color:var(--ink-dim);font-family:var(--mono)} .mkt b{font-weight:700}
+.edge{display:inline-block;margin-top:6px;font-size:12px;font-weight:700;padding:3px 8px;border-radius:6px;font-family:var(--mono)}
+.edge.win{background:rgba(63,185,80,.14);color:var(--up)} .edge.lose{background:rgba(248,81,73,.14);color:var(--down)}
+.edge.warn{background:rgba(139,152,165,.15);color:var(--ink-dim)}
+.evalline{font-size:12px;color:var(--ink-dim);margin-top:8px} .evalline .num{color:var(--ink)}
 .bench{font-size:11px;margin-top:9px;color:var(--ink-dim)}
-.meta{display:flex;gap:14px;margin-top:11px;padding-top:11px;border-top:1px solid var(--line);flex-wrap:wrap}
+.meta{display:flex;gap:14px;margin-top:12px;padding-top:12px;border-top:1px solid var(--line);flex-wrap:wrap}
 .meta div{font-size:11px;color:var(--ink-faint)} .meta div b{display:block;font-size:13px;color:var(--ink);margin-top:2px}
-.compare,.holds{margin-top:22px;background:var(--panel);border:1px solid var(--line);border-radius:12px}
-.compare{padding:16px 15px} .compare h2,.holds h2{font-size:13px;font-weight:700;color:var(--ink)}
-.compare h2{margin-bottom:14px} .holds h2{padding:15px 15px 11px}
-.bar-row{display:flex;align-items:center;gap:10px;margin-bottom:11px}
-.bar-label{width:104px;font-size:12px;flex-shrink:0} .bar-track{flex:1;height:20px;background:var(--panel-2);border-radius:5px;position:relative;overflow:hidden}
+.compare,.holds{margin-top:24px;background:var(--panel);border:1px solid var(--line);border-radius:12px}
+.compare{padding:18px 16px} .compare h2,.holds h2{font-size:13px;font-weight:700;color:var(--ink)}
+.compare h2{margin-bottom:16px} .compare h2 span{font-weight:500;color:var(--ink-faint)} .holds h2{padding:16px 16px 12px}
+.bar-row{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.bar-label{width:120px;font-size:12px;flex-shrink:0;line-height:1.35} .bar-label small{font-size:10px;color:var(--ink-faint);font-family:var(--mono)}
+.bar-track{flex:1;height:22px;background:var(--panel-2);border-radius:5px;position:relative;overflow:hidden}
 .bar-zero{position:absolute;left:50%;top:0;bottom:0;width:1px;background:var(--ink-faint);opacity:.5}
-.bar-fill{position:absolute;top:0;bottom:0;border-radius:4px;opacity:.9} .bar-val{width:56px;text-align:right;font-size:13px;font-weight:700}
+.bar-fill{position:absolute;top:0;bottom:0;border-radius:4px;opacity:.9} .bar-val{width:60px;text-align:right;font-size:13px;font-weight:700;flex-shrink:0}
 .holds{overflow:hidden} table{width:100%;border-collapse:collapse}
-th,td{text-align:right;padding:9px 15px;font-size:12px;border-top:1px solid var(--line)} th{color:var(--ink-faint);font-size:11px}
+th,td{text-align:right;padding:9px 16px;font-size:12px;border-top:1px solid var(--line)} th{color:var(--ink-faint);font-size:11px}
 td:first-child,th:first-child{text-align:left}
 .chip{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px;vertical-align:middle}
 .badge{font-size:10px;padding:1px 5px;border-radius:4px;background:var(--panel-2);color:var(--ink-dim)}
+.note{margin-top:16px;padding:11px 13px;background:rgba(255,180,84,.07);border:1px solid rgba(255,180,84,.22);border-radius:9px;font-size:11px;color:var(--D);line-height:1.5}
 button{background:var(--panel-2);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:7px 14px;cursor:pointer;font-size:13px}
-footer{margin-top:20px;font-size:11px;color:var(--ink-faint);text-align:center;line-height:1.6}
+footer{margin-top:18px;font-size:11px;color:var(--ink-faint);text-align:center;line-height:1.6}
 </style></head>
 <body>
 <header>
@@ -305,13 +343,14 @@ footer{margin-top:20px;font-size:11px;color:var(--ink-faint);text-align:center;l
 <div class="total">
   <div><div class="k">총 투입원금</div><div class="v num" id="tcap">-</div></div>
   <div><div class="k">총 평가액</div><div class="v num" id="teval">-</div></div>
-  <div><div class="k">총 손익</div><div class="v sub num" id="tpnl">-</div></div>
+  <div><div class="k">총 손익 (vs 시장)</div><div class="v sub num" id="tpnl">-</div></div>
 </div>
 <div class="grid" id="cards"></div>
-<div class="compare"><h2>전략별 수익률 비교</h2><div id="bars"></div></div>
+<div class="compare"><h2>전략별 수익률 비교 <span>— 괄호는 각 트랙 시작 후 시장 평균</span></h2><div id="bars"></div></div>
 <div class="holds"><h2>보유 종목 (전 트랙)</h2>
   <table><thead><tr><th>종목</th><th>트랙</th><th>매수가</th><th>현재가</th><th>수익률</th><th>구분</th></tr></thead>
   <tbody id="holdrows"></tbody></table></div>
+<div class="note">📌 벤치마크는 <b>각 트랙이 실제 매매를 시작한 날</b>부터 지수 수익률입니다. 한국 지수는 무료 데이터라 가끔 값이 튈 수 있어 <b>참고용</b>으로만 보세요.</div>
 <div style="margin:16px 0"><button onclick="load()">새로고침</button>
   {% if auth %}<a href="/logout" style="color:#8b98a5;font-size:12px;margin-left:12px">로그아웃</a>{% endif %}</div>
 <footer>A·B·C·D 모두 페이퍼/모의 · 실제 돈 안 걸림<br>손절 -7% 자동 · 한 종목 20% · 누적 -100만원 방어선</footer>
@@ -319,30 +358,53 @@ footer{margin-top:20px;font-size:11px;color:var(--ink-faint);text-align:center;l
 const C={A:'#4c8dff',B:'#5ac8fa',C:'#c07cff',D:'#ffb454'};
 const won=n=>Math.round(n).toLocaleString('ko-KR');
 const sg=v=>(v>=0?'+':'')+v.toFixed(1);
+function edgeHtml(t){
+  if(t.edge==null) return '';
+  if(t.bench_warn) return `<span class="edge warn">⚠ ${t.bench_name} 데이터 불안정 · 비교 참고불가</span>`;
+  const win=t.edge>=0;
+  return `<span class="edge ${win?'win':'lose'}">${sg(t.edge)}%p ${win?'선방':'뒤짐'}</span>`;
+}
+function mktHtml(t){
+  if(t.bench==null) return '<span class="mkt">(시장 데이터 없음)</span>';
+  const cls=t.bench>=0?'up':'down';
+  const warn=t.bench_warn?' ⚠':'';
+  return `<span class="mkt">(${t.bench_name} <b class="${cls}">${sg(t.bench)}%</b>${warn})</span>`;
+}
 async function load(){
   let d; try{ d=await (await fetch('/api/all')).json(); }catch(e){ document.getElementById('asof').textContent='조회실패'; return; }
   document.getElementById('asof').textContent=new Date().toLocaleString('ko-KR',{hour12:false}).slice(5);
   document.getElementById('tcap').textContent=won(d.total_cap)+'원';
   document.getElementById('teval').textContent=won(d.total_eval)+'원';
-  const tp=document.getElementById('tpnl'), pc=d.total_pnl/d.total_cap*100;
-  tp.textContent=(d.total_pnl>=0?'+':'')+won(d.total_pnl)+'원 ('+sg(pc)+'%)';
-  tp.className='v sub num '+(d.total_pnl>=0?'up':'down');
+  const tp=document.getElementById('tpnl');
+  const mkt=(d.total_bench!=null)?` <span class="mkt">(시장 ${sg(d.total_bench)}%)</span>`:'';
+  tp.innerHTML=sg(d.total_ret)+'%'+mkt;
+  tp.className='v sub num '+(d.total_ret>=0?'up':'down');
   const cw=document.getElementById('cards'); cw.innerHTML='';
   d.tracks.forEach(t=>{ const col=C[t.id];
-    const ret=t.error?'조회실패':(sg(t.ret)+'%'), rcls=t.error?'':(t.ret>=0?'up':'down');
-    const evl=t.error?'<span class="down">KIS 조회 실패</span>':`평가 <span class="num">${won(t.eval)}원</span> · 원금 <span class="num">${won(t.cap)}원</span>`;
-    const bench=(t.excess!=null)?`<div class="bench">vs S&P500 <span class="num ${t.excess>=0?'up':'down'}">${sg(t.excess)}%p</span></div>`:'';
-    const meta=t.error?'':`<div class="meta"><div>보유<b class="num">${t.holds}종목</b></div><div>현금<b class="num">${Math.round(t.cash_pct)}%</b></div></div>`;
+    let inner;
+    if(t.error){
+      inner=`<div class="ret"><span class="down" style="font-size:18px">KIS 조회 실패</span></div>
+        <div class="evalline down">잠시 후 다시 시도됩니다</div>`;
+    }else{
+      const rcls=t.ret>=0?'up':'down';
+      const bench=(t.excess!=null)?`<div class="bench">S&P500 대비 초과 <b class="num ${t.excess>=0?'up':'down'}">${sg(t.excess)}%p</b></div>`:'';
+      inner=`<div class="ret"><span class="num ${rcls}">${sg(t.ret)}%</span>${mktHtml(t)}</div>
+        ${edgeHtml(t)}
+        <div class="evalline">평가 <span class="num">${won(t.eval)}원</span> · 원금 <span class="num">${won(t.cap)}원</span></div>
+        ${bench}
+        <div class="meta"><div>보유<b class="num">${t.holds}종목</b></div><div>현금<b class="num">${Math.round(t.cash_pct)}%</b></div></div>`;
+    }
     cw.innerHTML+=`<div class="card"><div class="spine" style="background:${col}"></div><div class="cbody">
       <span class="tag" style="background:${col}">${t.id}</span><h3>${t.name}</h3><div class="method">${t.method}</div>
-      <div class="ret num ${rcls}">${ret}</div><div class="evalline">${evl}</div>${bench}${meta}</div></div>`;
+      ${inner}</div></div>`;
   });
   const valid=d.tracks.filter(t=>!t.error), mx=Math.max(5,...valid.map(t=>Math.abs(t.ret)));
   const bw=document.getElementById('bars'); bw.innerHTML='';
   d.tracks.forEach(t=>{ const col=C[t.id];
+    const sub=(t.bench!=null)?`<br><small>(${t.bench_name} ${sg(t.bench)}%${t.bench_warn?' ⚠':''})</small>`:'';
     if(t.error){ bw.innerHTML+=`<div class="bar-row"><div class="bar-label"><span class="chip" style="background:${col}"></span>${t.id} ${t.name}</div><div class="bar-track"></div><div class="bar-val">-</div></div>`; return; }
     const w=Math.abs(t.ret)/mx*48, left=t.ret>=0?50:50-w;
-    bw.innerHTML+=`<div class="bar-row"><div class="bar-label"><span class="chip" style="background:${col}"></span>${t.id} ${t.name}</div>
+    bw.innerHTML+=`<div class="bar-row"><div class="bar-label"><span class="chip" style="background:${col}"></span>${t.id} ${t.name}${sub}</div>
       <div class="bar-track"><div class="bar-zero"></div><div class="bar-fill" style="left:${left}%;width:${w}%;background:${col}"></div></div>
       <div class="bar-val ${t.ret>=0?'up':'down'}">${sg(t.ret)}%</div></div>`;
   });
