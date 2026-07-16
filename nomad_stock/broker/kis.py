@@ -226,6 +226,50 @@ class KISClient:
             "change_pct": _f("prdy_ctrt", float),  # 전일대비 등락률(%)
         }
 
+    # ----- 재무 (트랙 D 한국 펀더멘털 3박자) -----------------------------
+    def financial_ratio(self, symbol: str, annual: bool = True) -> dict | None:
+        """국내주식 재무비율(최근 결산 기준). 실패하면 None.
+
+        반환: {yymm, rev_growth, op_growth, ni_growth, roe, debt_ratio, eps, bps}
+          증가율·ROE·부채비율은 % 단위, eps·bps는 원. KIS TR FHKST66430300.
+        ⚠️ 모의 도메인이 재무 TR을 막으면 None이 올 수 있음 → 서버 실환경에서 검증 필요.
+        """
+        url = f"{self.cfg.base_url}/uapi/domestic-stock/v1/finance/financial-ratio"
+        params = {
+            "fid_div_cls_code": "0" if annual else "1",  # 0=년, 1=분기
+            "fid_cond_mrkt_div_code": "J",
+            "fid_input_iscd": symbol,
+        }
+        try:
+            resp = self._request("GET", url, headers=self._headers("FHKST66430300"), params=params)
+            data = resp.json()
+        except Exception:
+            return None
+        if data.get("rt_cd") != "0":
+            return None
+        rows = data.get("output") or []
+        if not rows:
+            return None
+        o = rows[0]  # 최근 결산년월
+
+        def _f(key):
+            v = o.get(key, "")
+            try:
+                return float(v) if v not in ("", None) else None
+            except (ValueError, TypeError):
+                return None
+
+        return {
+            "yymm": o.get("stac_yymm", ""),
+            "rev_growth": _f("grs"),            # 매출액 증가율 %
+            "op_growth": _f("bsop_prfi_inrt"),  # 영업이익 증가율 %
+            "ni_growth": _f("ntin_inrt"),       # 순이익 증가율 %
+            "roe": _f("roe_val"),               # ROE %
+            "debt_ratio": _f("lblt_rate"),      # 부채비율 %
+            "eps": _f("eps"),
+            "bps": _f("bps"),
+        }
+
     # ----- 주문 ---------------------------------------------------------
     def order_cash(
         self,

@@ -154,8 +154,8 @@ def create_app() -> Flask:
     @app.route("/api/all")
     @login_required
     def api_all():
-        # 4트랙 종합 (A=한국KIS, B/C/D=페이퍼 장부). 비교 대시보드용.
-        from .. import paper_long, paper_track_d, paper_us, rules
+        # 4트랙 종합 (A=한국KIS, B=미국추종, C=미국펀더, D=한국펀더 페이퍼). 역추세는 보류(제외).
+        from .. import paper_fund_kr, paper_long, paper_us, rules
         cap = 10_000_000
         tracks, holds = [], []
 
@@ -191,9 +191,25 @@ def create_app() -> Flask:
                 t["error"] = str(ex)[:60]
             return t
 
+        def paper_kr(tid, name, method, mod):
+            # 원화 네이티브 장부(한국 펀더멘털). 벤치마크는 bench 로직(코스피200·경고)에 위임.
+            t = {"id": tid, "name": name, "method": method, "cap": cap}
+            try:
+                e = mod.evaluate()
+                t["eval"] = e["total_krw"]
+                t["ret"] = e["pnl_krw"] / cap * 100 if cap else 0
+                t["holds"] = len(e["rows"])
+                t["cash_pct"] = e["cash_krw"] / e["total_krw"] * 100 if e["total_krw"] else 0
+                for r in e["rows"]:
+                    holds.append({"name": r["name"], "track": tid, "buy": f"{r['avg_krw']:,}",
+                                  "cur": f"{r['cur_krw']:,}", "pct": r["pct"]})
+            except Exception as ex:
+                t["error"] = str(ex)[:60]
+            return t
+
         tracks.append(paper("B", "추종 (미국)", "볼린저 상단권 · 단기 · 페이퍼", paper_us))
-        tracks.append(paper("C", "펀더멘털", "3박자 필터 · 장기 · 페이퍼", paper_long, spx=True))
-        tracks.append(paper("D", "역추세", "볼린저 하단·RSI 과매도 · 페이퍼", paper_track_d))
+        tracks.append(paper("C", "펀더멘털 (미국)", "3박자 필터 · 장기 · 페이퍼", paper_long, spx=True))
+        tracks.append(paper_kr("D", "펀더멘털 (한국)", "3박자 필터 · 장기 · 페이퍼", paper_fund_kr))
 
         # ----- 트랙별 시장(벤치마크) 대비 비교 : 각 트랙 시작일 기준 -----
         try:
@@ -202,12 +218,12 @@ def create_app() -> Flask:
                 "B": paper_us.ledger_start(paper_us.load_ledger()),
                 "C": (paper_long.load_ledger().get("start_date")
                       or paper_us.ledger_start(paper_long.load_ledger())),
-                "D": paper_us.ledger_start(paper_track_d.load_ledger()),
+                "D": (paper_fund_kr.load_ledger().get("start_date") or rules.TRACK_A_START),
             }
         except Exception:
             starts = {}
         bench_tk = {"A": ("KS200", "코스피200"), "B": ("US500", "S&P500"),
-                    "C": ("US500", "S&P500"), "D": ("US500", "S&P500")}
+                    "C": ("US500", "S&P500"), "D": ("KS200", "코스피200")}
         bvals = []
         for t in tracks:
             tk, bname = bench_tk[t["id"]]
@@ -218,8 +234,8 @@ def create_app() -> Flask:
                 if br is not None:
                     t["bench"] = round(br, 2)
                     t["edge"] = round(t["ret"] - br, 2)
-                    if t["id"] == "A":
-                        t["bench_warn"] = True   # 한국 무료지수 데이터 불안정 → 참고용 경고
+                    if t["id"] in ("A", "D"):
+                        t["bench_warn"] = True   # 한국 지수(코스피200) 무료 데이터 불안정 → 참고용 경고
                     else:
                         bvals.append(br)         # 총 시장평균엔 신뢰 가능한 미국(S&P500)만
 
@@ -353,7 +369,7 @@ footer{margin-top:18px;font-size:11px;color:var(--ink-faint);text-align:center;l
 <div class="note">📌 벤치마크는 <b>각 트랙이 실제 매매를 시작한 날</b>부터 지수 수익률입니다. 한국 지수는 무료 데이터라 가끔 값이 튈 수 있어 <b>참고용</b>으로만 보세요.</div>
 <div style="margin:16px 0"><button onclick="load()">새로고침</button>
   {% if auth %}<a href="/logout" style="color:#8b98a5;font-size:12px;margin-left:12px">로그아웃</a>{% endif %}</div>
-<footer>A·B·C·D 모두 페이퍼/모의 · 실제 돈 안 걸림<br>손절 -7% 자동 · 한 종목 20% · 누적 -100만원 방어선</footer>
+<footer>A·B·C·D 모두 페이퍼/모의 · 실제 돈 안 걸림 · 역추세는 보류(비활성)<br>추종(A·B) 손절 -7% 자동 · 펀더멘털(C·D) 손절 없음(장기·근거훼손 시 매도) · 한 종목 20%</footer>
 <script>
 const C={A:'#4c8dff',B:'#5ac8fa',C:'#c07cff',D:'#ffb454'};
 const won=n=>Math.round(n).toLocaleString('ko-KR');

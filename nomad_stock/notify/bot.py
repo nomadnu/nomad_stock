@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 
-from .. import paper_long, paper_track_d, paper_us, rules
+from .. import paper_fund_kr, paper_long, paper_track_d, paper_us, rules
 from ..broker import KISClient
 from ..live.market_hours import is_market_open, market_status
 from ..live.risk import RiskConfig, RiskManager
@@ -87,16 +87,22 @@ class TradingBot:
             return "🇺🇸 미국 페이퍼 알림을 실행했어요 (위 결과 확인)."
         if cmd in ("미국잔고", "미국계좌", "usbalance"):
             return paper_us.format_balance()
-        if cmd in ("역추세", "역추세잔고", "d"):
-            self.run_d_alert()
-            return "🔄 역추세 알림을 실행했어요 (위 결과 확인)."
-        if cmd in ("역추세계좌", "d잔고", "dbalance"):
+        if cmd in ("역추세", "역추세잔고"):
+            return ("⏸ 역추세 트랙은 보류(비활성) 상태예요 (v2 개편).\n"
+                    "새 추천은 없고, 계좌·데이터는 그대로 보존됩니다. "
+                    "상승장 전환 시 재검토.\n\n" + paper_track_d.format_balance())
+        if cmd in ("역추세계좌", "역추세잔액"):
             return paper_track_d.format_balance()
         if cmd in ("장기", "장기편입", "long"):
             self.run_long_alert()
-            return "📗 장기 편입 후보를 스캔했어요 (위 결과)."
+            return "📗 미국 장기 편입 후보를 스캔했어요 (위 결과)."
         if cmd in ("장기잔고", "장기계좌"):
             return paper_long.format_balance()
+        if cmd in ("한펀", "한국펀더", "한국펀더멘털", "krfund", "d"):
+            self.run_kr_fund_alert()
+            return "📘 한국 펀더멘털 편입 후보를 스캔했어요 (위 결과)."
+        if cmd in ("한펀잔고", "한국펀더잔고", "한국펀더멘털잔고", "krbalance"):
+            return paper_fund_kr.format_balance()
         if cmd in ("장기점검", "분기점검"):
             self.run_long_review()
             return "📗 장기 분기 점검을 실행했어요 (위 결과)."
@@ -114,10 +120,13 @@ class TradingBot:
             "• 신호 — 전략 현재 신호\n"
             "• 상태 — 봇 가동/정지·한도·방어선\n"
             "• 재평가 — 보유종목 주간 점검 (수동 실행)\n"
-            "• 미국 — 미국 페이퍼 후보 알림 (매수/매도 승인)\n"
-            "• 미국잔고 — 미국 페이퍼 계좌 (달러·원화)\n"
-            "• 장기 — 미국 장기 3박자 편입 후보\n"
-            "• 장기잔고 — 장기 계좌 (S&P500 대비 초과수익)\n"
+            "• 미국 — 미국 추종(B) 페이퍼 후보 알림\n"
+            "• 미국잔고 — 미국 추종(B) 계좌\n"
+            "• 장기 — 미국 펀더멘털(C) 3박자 편입 후보\n"
+            "• 장기잔고 — 미국 펀더멘털(C) 계좌 (S&P500 대비)\n"
+            "• 한펀 — 한국 펀더멘털(D) 3박자 편입 후보\n"
+            "• 한펀잔고 — 한국 펀더멘털(D) 계좌 (코스피200 대비)\n"
+            "• 역추세계좌 — 역추세(보류) 계좌 조회\n"
             "• 정지 / 재개 — 자동매매 킬스위치\n"
             "• 원금변경 [금액] — 운용원금 변경\n"
             "• myid — 내 chat_id 확인\n"
@@ -303,7 +312,7 @@ class TradingBot:
 
     # ----- 미국 페이퍼 트레이딩 (트랙 B, 지침서 v0.5 / 실제주문 없음) -----
     def run_us_paper_alert(self) -> None:
-        """밤 9시: 미국 매수후보 + 보유 매도후보를 승인 버튼과 함께. 승인분은 개장後 기록 예약."""
+        """밤 8시: 미국 매수후보 + 보유 매도후보를 승인 버튼과 함께. 승인분은 개장後 기록 예약."""
         st = rules.load_state()
         if st.halted:
             self.send("🔴 정지 상태라 미국 페이퍼 알림을 건너뜁니다.")
@@ -322,7 +331,7 @@ class TradingBot:
             if status == "매도검토":
                 sells.append((sym, pos["name"], reason))
 
-        lines = [f"🇺🇸 미국 페이퍼 트레이딩 (밤 9시 · 환율 {fx:.0f})"]
+        lines = [f"🇺🇸 미국 페이퍼 트레이딩 (밤 8시 · 환율 {fx:.0f})"]
         lines.append("\n[매수 후보] (PER 대신 모멘텀순)" if buys else "\n매수 후보 없음")
         for c in buys:
             lines.append(
@@ -391,7 +400,57 @@ class TradingBot:
         else:
             self.send(text)
 
-    # ----- 트랙 D 역추세 (밤9시 추천 → 개장 후 체결, 손절 자동) -----
+    # ----- 트랙 D(신규) 한국 펀더멘털 (3박자 · 장기 · 원화 즉시 기록) -----
+    def run_kr_fund_alert(self) -> None:
+        """한국 3박자 통과 편입 후보 → 승인 버튼. 한국장이라 승인 시 즉시 원화 기록."""
+        self.send("📘 한국 펀더멘털 3박자 스캔 중... (한투 재무비율 조회, 1~2분)")
+        try:
+            from ..scanner_kr_fund import format_kr_fund_candidates, scan_kr_fund
+            cands = scan_kr_fund(self.client, exclude=paper_fund_kr.held_codes())
+        except Exception as e:
+            self.send(f"한국 펀더멘털 스캔 실패: {e}")
+            return
+        text = format_kr_fund_candidates(cands)
+        if cands:
+            buttons = [{"text": f"📘편입 {c['name'][:12]}", "callback_data": f"krfbuy:{c['code']}"}
+                       for c in cands]
+            buttons.append({"text": "❌ 보류", "callback_data": "krfignore"})
+            self.send_buttons(text, buttons)
+        else:
+            self.send(text)
+
+    def run_kr_fund_review(self) -> None:
+        """분기 점검: 보유 한국 종목의 3박자(편입 근거) 재확인 → 훼손 시 매도 검토."""
+        led = paper_fund_kr.load_ledger()
+        if not led["positions"]:
+            self.send("📘 한국 펀더멘털 분기 점검: 보유 종목 없음.")
+            return
+        from ..scanner_kr_fund import pass_3factor_kr
+        lines = ["📘 한국 펀더멘털 분기 점검 (편입 근거 유효성)"]
+        sells = []
+        for code, pos in led["positions"].items():
+            try:
+                fr = self.client.financial_ratio(code)
+                per = self.client.get_quote(code).get("per", 0.0)
+                ok, m = pass_3factor_kr(fr, per)
+            except Exception:
+                ok, m = True, {}
+            if ok:
+                lines.append(f"• {pos['name']}({code}): 근거 유지 ✅")
+            else:
+                broken = [x for x, k in [("성장", "g_ok"), ("재무", "f_ok"), ("밸류", "v_ok")]
+                          if not m.get(k, True)]
+                lines.append(f"• {pos['name']}({code}): {'·'.join(broken) or '재무조회불가'} 훼손 ⚠️ → 매도 검토")
+                sells.append((code, pos["name"]))
+        text = "\n".join(lines) + "\n\n※ 주가 하락이 아니라 '근거 훼손'만 매도 사유예요."
+        if sells:
+            buttons = [{"text": f"🔴매도 {name[:12]}", "callback_data": f"krfsell:{code}"} for code, name in sells]
+            buttons.append({"text": "❌ 전체 보유", "callback_data": "krfhold"})
+            self.send_buttons(text, buttons)
+        else:
+            self.send(text + "\n\n모두 근거 유지 — 계속 보유 권장.")
+
+    # ----- 트랙 D 역추세 (보류·비활성. 자동 알림 없음, 손절보호·조회만 유지) -----
     def run_d_alert(self) -> None:
         """밤 9시: 역추세 매수후보(물타기 금지) + 보유 익절/손절 후보. 개장 후 체결 예약."""
         st = rules.load_state()
@@ -619,6 +678,7 @@ class TradingBot:
         last_us_date = None
         last_settle_date = None
         last_long_date = None
+        last_krfund_date = None
         last_quarter = None
         last_risk = 0.0
         while True:
@@ -639,13 +699,12 @@ class TradingBot:
                     self.run_weekly_review()
                 except Exception as e:
                     print(f"[봇] 재평가 오류: {e!r}")
-            # 밤 9시 미국 페이퍼 승인 알림 (KST, 평일 1회)
+            # 밤 8시 미국 페이퍼 승인 알림 (KST, 평일 1회) · 역추세는 보류(비활성)
             if (now.weekday() < 5 and now.time() >= us_time
                     and last_us_date != now.date()):
                 last_us_date = now.date()
                 try:
                     self.run_us_paper_alert()
-                    self.run_d_alert()   # 트랙D 역추세도 밤9시
                 except Exception as e:
                     print(f"[봇] 미국 알림 오류: {e!r}")
             # 미국 개장+3h20m(12:50 ET) 예약 체결 기록 (미국 거래일 1회)
@@ -659,7 +718,7 @@ class TradingBot:
                     self.run_d_settle()      # 트랙D 역추세도 같은 시각
                 except Exception as e:
                     print(f"[봇] 미국 체결 오류: {e!r}")
-            # 트랙C 장기 편입 알림 (매주 목요일 밤 9시, 주 1회)
+            # 트랙C 미국 장기 편입 알림 (매주 목요일 밤 8시, 주 1회)
             if (now.weekday() == rules.LONG_ALERT_DAY and now.time() >= long_time
                     and last_long_date != now.date()):
                 last_long_date = now.date()
@@ -667,15 +726,24 @@ class TradingBot:
                     self.run_long_alert()
                 except Exception as e:
                     print(f"[봇] 장기 알림 오류: {e!r}")
-            # 트랙C 장기 분기 점검 (1·4·7·10월 초 1회)
+            # 트랙D 한국 펀더멘털 편입 후보 (매주 목요일 점심 12:50, 주 1회)
+            if (now.weekday() == rules.LONG_ALERT_DAY and now.time() >= scan_time
+                    and last_krfund_date != now.date()):
+                last_krfund_date = now.date()
+                try:
+                    self.run_kr_fund_alert()
+                except Exception as e:
+                    print(f"[봇] 한국펀더 알림 오류: {e!r}")
+            # 트랙C·D 펀더멘털 분기 점검 (1·4·7·10월 초 1회)
             qkey = f"{now.year}Q{(now.month - 1) // 3 + 1}"
             if (now.month in (1, 4, 7, 10) and now.day <= 3
                     and now.time() >= dtime(9, 0) and last_quarter != qkey):
                 last_quarter = qkey
                 try:
                     self.run_long_review()
+                    self.run_kr_fund_review()
                 except Exception as e:
-                    print(f"[봇] 장기 점검 오류: {e!r}")
+                    print(f"[봇] 분기 점검 오류: {e!r}")
             # 장중 리스크 감시 (3분마다)
             if is_market_open(now) and time.time() - last_risk > 180:
                 last_risk = time.time()
@@ -778,6 +846,32 @@ class TradingBot:
             name = led["positions"].get(sym, {}).get("name", sym)
             paper_long.add_reservation("sell", sym, name)
             self.send(f"📌 장기 매도 예약: {name}({sym}) — 새벽 개장 후 기록돼요.")
+            return
+        if data == "krfignore":
+            self.send("📘 보류. 이번엔 한국 펀더멘털 편입 안 함.")
+            return
+        if data == "krfhold":
+            self.send("📘 전체 보유 유지 (한국 펀더멘털).")
+            return
+        if data.startswith("krfbuy:"):  # 한국 펀더멘털 편입 (즉시 원화 기록)
+            code = data.split(":", 1)[1]
+            from ..scanner_kr_fund import KR_FUND_UNIVERSE
+            name = KR_FUND_UNIVERSE.get(code, code)
+            try:
+                price = paper_fund_kr.kr_price(code)
+            except Exception as e:
+                self.send(f"{name}({code}) 가격 조회 실패: {e}")
+                return
+            self.send(paper_fund_kr.record_buy(code, name, price, note="3박자 통과")["msg"])
+            return
+        if data.startswith("krfsell:"):  # 한국 펀더멘털 매도 (즉시)
+            code = data.split(":", 1)[1]
+            try:
+                price = paper_fund_kr.kr_price(code)
+            except Exception as e:
+                self.send(f"{code} 가격 조회 실패: {e}")
+                return
+            self.send(paper_fund_kr.record_sell(code, price)["msg"])
             return
         if data.startswith("buy:"):
             code = data.split(":", 1)[1]
