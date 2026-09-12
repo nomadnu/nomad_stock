@@ -623,27 +623,24 @@ class TradingBot:
 
     # ----- 리스크 감시 (STEP 5) -----
     def run_risk_check(self) -> None:
-        """장중 주기 실행: 방어선 도달 시 완전정지, 종목별 -7% 손절 자동매도.
-
-        정지(halted) 상태면 사용자가 수동 통제 중이므로 손절도 건너뛴다.
+        """장중 주기 실행. 종목별 -7% 손절은 정지 여부와 무관하게 '항상' 실행한다
+        (급락으로 방어선에 걸려도 물린 종목을 손절로 정리). 방어선(-100만) 도달 시엔
+        '신규 매수'만 정지한다(run_daily_scan 등이 halted를 보고 매수 건너뜀).
         """
         st = rules.load_state()
-        if st.halted:
-            return
         try:
             bal = self.client.get_balance()
         except Exception:
             return
-        # 1) 누적 손실 방어선 (-100만) → 완전 정지 + 긴급 알림
+        # 1) 방어선(-100만) 도달 → 신규매수 정지 + 알림 (아직 정지 전일 때 1회)
         loss = st.capital - bal["total_eval"]
         if not st.halted and loss >= rules.DEFENSE_LINE:
             rules.halt("누적 손실 방어선(-100만) 도달")
             self.send(
                 f"🚨 방어선 도달! 누적손실 {loss:,}원 (총평가 {bal['total_eval']:,}).\n"
-                f"자동매매를 완전 정지했습니다. 점검 후 '재개' 하세요."
+                f"신규 매수는 정지했습니다(손절 -7%는 계속 작동). 점검 후 '재개' 하세요."
             )
-            return
-        # 2) 종목별 손절 (-7%) 자동매도
+        # 2) 종목별 손절 (-7%) — 정지 중에도 항상 실행 (급락 시 물린 종목 자동 정리)
         rm = RiskManager(
             config=RiskConfig(stop_loss=rules.STOP_LOSS_PCT, take_profit=0.0),
             client=self.client,
