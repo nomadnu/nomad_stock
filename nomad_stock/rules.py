@@ -97,6 +97,9 @@ def set_defense_armed(armed: bool) -> BotState:
 def resume() -> BotState:
     st = load_state()
     st.halted, st.halt_reason = False, ""
+    # 재개 = 방어선 경고를 확인함 → 방어선 자동정지 해제(즉시 재정지·반복 알림 방지).
+    # 총평가가 방어선 위로 회복되면 run_risk_check가 자동으로 다시 무장한다.
+    st.defense_armed = False
     save_state(st)
     return st
 

@@ -149,7 +149,10 @@ class TradingBot:
             loss = st.capital - bal["total_eval"]
             lines.append(f"총평가 {bal['total_eval']:,}원 (원금대비 {-loss:+,}원)")
             if loss >= rules.DEFENSE_LINE:
-                lines.append("⚠️ 방어선 도달! 자동매매가 정지되어야 합니다.")
+                if st.defense_armed:
+                    lines.append("⚠️ 방어선 아래 — 다음 장중 체크 때 신규매수 정지(손절은 계속).")
+                else:
+                    lines.append("⚠️ 방어선 아래지만 '재개'로 확인됨 — 매매 지속(손절 계속). 회복 시 자동 재무장.")
         except Exception:
             pass
         return "\n".join(lines)
