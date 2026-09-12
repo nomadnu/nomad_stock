@@ -44,6 +44,9 @@ class BotState:
     capital: int = DEFAULT_CAPITAL   # 운용 원금 (/원금변경으로만)
     halted: bool = False             # 킬스위치/방어선 정지 여부
     halt_reason: str = ""            # 정지 사유
+    defense_armed: bool = True       # 방어선 자동정지 '재무장' 여부.
+    #   한 번 방어선에 걸리면 False(해제) → 재개해도 반복 정지 안 함(무한루프 방지).
+    #   총평가가 방어선 위로 회복되면 자동 True(재무장)로 되돌아가 다음 하락 때 다시 보호.
 
     def position_budget(self) -> int:
         """한 종목에 넣을 수 있는 최대 금액 = min(원금×20%, 200만)."""
@@ -63,6 +66,7 @@ def load_state() -> BotState:
                 capital=int(data.get("capital", DEFAULT_CAPITAL)),
                 halted=bool(data.get("halted", False)),
                 halt_reason=str(data.get("halt_reason", "")),
+                defense_armed=bool(data.get("defense_armed", True)),
             )
         except (json.JSONDecodeError, ValueError):
             pass
@@ -74,9 +78,18 @@ def save_state(state: BotState) -> None:
         json.dump(asdict(state), f, ensure_ascii=False, indent=2)
 
 
-def halt(reason: str) -> BotState:
+def halt(reason: str, disarm_defense: bool = False) -> BotState:
     st = load_state()
     st.halted, st.halt_reason = True, reason
+    if disarm_defense:
+        st.defense_armed = False   # 방어선 자동정지 해제 → 재개해도 반복 정지 안 함
+    save_state(st)
+    return st
+
+
+def set_defense_armed(armed: bool) -> BotState:
+    st = load_state()
+    st.defense_armed = armed
     save_state(st)
     return st
 

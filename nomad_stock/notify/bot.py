@@ -137,6 +137,8 @@ class TradingBot:
         st = rules.load_state()
         lines = [f"⚙️ 봇 상태 ({market_status()})"]
         lines.append("🟢 가동 중" if not st.halted else f"🔴 정지됨 — {st.halt_reason}")
+        lines.append("🛡 방어선 무장" if st.defense_armed
+                     else f"🛡 방어선 해제 — 재개 후 반복정지 안 함 (총평가 {st.capital - rules.DEFENSE_LINE:,}원 위 회복 시 자동 재무장)")
         lines.append(f"운용원금 {st.capital:,}원")
         lines.append(f"한 종목 한도 {st.position_budget():,}원 (원금 20%/최대 200만)")
         lines.append(
@@ -632,15 +634,23 @@ class TradingBot:
             bal = self.client.get_balance()
         except Exception:
             return
-        # 1) 방어선(-100만) 도달 → 신규매수 정지 + 알림 (아직 정지 전일 때 1회)
+        # 1) 방어선(-100만): '무장' 상태에서 도달 시 1회만 신규매수 정지+알림.
+        #    한 번 걸리면 재무장 해제 → '재개'해도 반복 정지/알림 안 함(무한루프 방지).
+        #    총평가가 방어선 위로 회복되면 자동 재무장 → 다음 하락 때 다시 보호.
         loss = st.capital - bal["total_eval"]
-        if not st.halted and loss >= rules.DEFENSE_LINE:
-            rules.halt("누적 손실 방어선(-100만) 도달")
-            self.send(
-                f"🚨 방어선 도달! 누적손실 {loss:,}원 (총평가 {bal['total_eval']:,}).\n"
-                f"신규 매수는 정지했습니다(손절 -7%는 계속 작동). 점검 후 '재개' 하세요."
-            )
-        # 2) 종목별 손절 (-7%) — 정지 중에도 항상 실행 (급락 시 물린 종목 자동 정리)
+        floor = st.capital - rules.DEFENSE_LINE
+        if loss >= rules.DEFENSE_LINE:
+            if st.defense_armed:
+                rules.halt("누적 손실 방어선(-100만) 도달", disarm_defense=True)
+                self.send(
+                    f"🚨 방어선 도달! 누적손실 {loss:,}원 (총평가 {bal['total_eval']:,}).\n"
+                    f"신규 매수는 정지했습니다(손절 -7%는 계속 작동).\n"
+                    f"'재개'하면 반복 알림 없이 매매가 이어져요. "
+                    f"총평가가 {floor:,}원 위로 회복되면 방어선이 자동 재무장됩니다."
+                )
+        elif not st.defense_armed:
+            rules.set_defense_armed(True)   # 방어선 위로 회복 → 재무장
+        # 2) 종목별 손절 (-7%) — 정지 여부와 무관하게 항상 실행 (급락 시 물린 종목 자동 정리)
         rm = RiskManager(
             config=RiskConfig(stop_loss=rules.STOP_LOSS_PCT, take_profit=0.0),
             client=self.client,
