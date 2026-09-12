@@ -22,6 +22,31 @@ from .broker import KISClient
 from .data.loader import load_ohlcv
 
 
+# ===== 하락장(약세장) 필터 — 추종(A·B) 신규매수 보류용 =====
+# 지수가 60일선 아래면 약세로 보고 추종 신규매수를 쉰다(반등 없는 하락장 휩쓸림 방지).
+# 200일선은 장기추세라 조정을 못 걸러 너무 느림 → 단기 전략엔 60일선이 적합.
+REGIME_MA = 60
+US_REGIME_TICKER = "US500"       # S&P500
+KR_REGIME_TICKER = "069500"      # KODEX200 ETF (코스피 지수보다 데이터가 깨끗)
+
+
+def market_regime(ticker: str) -> tuple[bool, str]:
+    """(매수 가능한 장인가, 설명). 지수 현재가가 60일선 위=강세(True), 아래=약세(False).
+    데이터 부족·조회 실패 시 기본 True(매수 허용) — 나쁜 데이터로 매매를 막지 않는다."""
+    try:
+        df = fdr.DataReader(ticker, "2024-01-01")
+        c = df["Close"].dropna()
+        if len(c) < REGIME_MA + 5:
+            return True, "추세 데이터 부족(매수 허용)"
+        ma = float(c.rolling(REGIME_MA).mean().iloc[-1])
+        last = float(c.iloc[-1])
+        if last >= ma:
+            return True, f"강세권({REGIME_MA}일선 위)"
+        return False, f"약세장({REGIME_MA}일선 아래 {(last/ma-1)*100:+.1f}%)"
+    except Exception:
+        return True, "추세판단 실패(매수 허용)"
+
+
 def get_universe() -> pd.DataFrame:
     """자동필터를 통과한 코스피 종목 목록."""
     df = fdr.StockListing("KOSPI").dropna(subset=["Marcap", "Amount", "Close"])

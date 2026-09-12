@@ -22,7 +22,15 @@ from ..broker import KISClient
 from ..live.market_hours import is_market_open, market_status
 from ..live.risk import RiskConfig, RiskManager
 from ..rebalance import SELL as _REVIEW_SELL, review_holdings
-from ..scanner import format_candidates, format_us_candidates, scan, scan_us
+from ..scanner import (
+    KR_REGIME_TICKER,
+    US_REGIME_TICKER,
+    format_candidates,
+    format_us_candidates,
+    market_regime,
+    scan,
+    scan_us,
+)
 from ..strategy import make_strategy
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -278,6 +286,12 @@ class TradingBot:
         if st.halted:
             self.send(f"🔴 정지 상태({st.halt_reason})라 오늘 스캔을 건너뜁니다.")
             return
+        bull, reason = market_regime(KR_REGIME_TICKER)
+        if not bull:
+            self._save_pending([])
+            self.send(f"🐻 코스피 {reason} — 오늘 추종(한국) 신규매수는 쉬어갑니다.\n"
+                      f"현금 대기 (손절·주간재평가는 계속 작동).")
+            return
         cands = scan(self.client)
         self._save_pending(cands)
         header = "🌎 미국장 요약: (v1 미제공)\n\n"
@@ -323,8 +337,9 @@ class TradingBot:
             self.send("🔴 정지 상태라 미국 페이퍼 알림을 건너뜁니다.")
             return
         self.send("🇺🇸 미국 페이퍼 후보 스캔 중... (1~2분)")
+        bull, regime = market_regime(US_REGIME_TICKER)
         try:
-            buys = scan_us()
+            buys = scan_us() if bull else []   # 약세장이면 신규매수 보류(매도는 계속)
             fx = paper_us.fx_rate()
         except Exception as e:
             self.send(f"미국 스캔 실패: {e}")
@@ -337,7 +352,10 @@ class TradingBot:
                 sells.append((sym, pos["name"], reason))
 
         lines = [f"🇺🇸 미국 페이퍼 트레이딩 (밤 8시 · 환율 {fx:.0f})"]
-        lines.append("\n[매수 후보] (PER 대신 모멘텀순)" if buys else "\n매수 후보 없음")
+        if not bull:
+            lines.append(f"\n🐻 S&P500 {regime} — 신규매수 보류. 보유 매도후보만 봅니다.")
+        else:
+            lines.append("\n[매수 후보] (PER 대신 모멘텀순)" if buys else "\n매수 후보 없음")
         for c in buys:
             lines.append(
                 f"• {c['name']}({c['symbol']}) ${c['price']} (≈{c['price']*fx:,.0f}원)"
