@@ -270,6 +270,25 @@ class KISClient:
             "bps": _f("bps"),
         }
 
+    # ----- 개장일(휴장일) 조회 -----------------------------------------
+    def is_open_day(self, yyyymmdd: str | None = None) -> bool:
+        """국내 증시 개장일이면 True. 조회 실패 시 True(막지 않음). KIS TR CTCA0903R."""
+        from datetime import datetime as _dt
+        day = yyyymmdd or _dt.now().strftime("%Y%m%d")
+        url = f"{self.cfg.base_url}/uapi/domestic-stock/v1/quotations/chk-holiday"
+        params = {"BASS_DT": day, "CTX_AREA_NK": "", "CTX_AREA_FK": ""}
+        try:
+            resp = self._request("GET", url, headers=self._headers("CTCA0903R"), params=params)
+            data = resp.json()
+            if data.get("rt_cd") != "0":
+                return True
+            for row in data.get("output", []):
+                if row.get("bass_dt") == day:
+                    return row.get("opnd_yn", "Y") == "Y"
+            return True
+        except Exception:
+            return True
+
     # ----- 주문 ---------------------------------------------------------
     def order_cash(
         self,

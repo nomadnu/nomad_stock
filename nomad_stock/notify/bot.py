@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 
-from .. import paper_fund6, paper_fund_kr, paper_long, paper_track_d, paper_us, rules
+from .. import fund6_watch, paper_fund6, paper_fund_kr, paper_long, paper_track_d, paper_us, rules
 from ..broker import KISClient
 from ..scanner_fund6 import STRENGTH
 from ..scanner_fund6 import format_candidates as f6_format
@@ -90,6 +90,9 @@ class TradingBot:
         if cmd in ("점검", "분기점검", "review"):
             self.run_fund6_review()
             return "🔎 6트랙 분기 점검 실행 (위 결과)."
+        if cmd in ("저가", "저가추적", "lowwatch"):
+            self.run_fund6_low_watch()
+            return "📉 저가 추적 점검 실행 (저가 근처 종목만 알림이 옵니다)."
         if cmd in ("현재가", "price"):
             return self.price_text(arg)
         if cmd in ("정지", "stop", "재개", "resume"):
@@ -123,6 +126,7 @@ class TradingBot:
             "• 현황 — 6트랙 수익률·보유·현금 요약\n"
             "• 스캔 — 6트랙 편입 후보 알림 (한국+미국)\n"
             "• 스캔한국 / 스캔미국 — 시장별 스캔\n"
+            "• 저가 — 저가 추적 점검(저가 근처 종목 알림)\n"
             "• 점검 — 분기 3박자 재점검\n"
             "• 현재가 [종목코드] — 예: 현재가 005930\n"
             "• 아카이브 — 지난 트랙(추종·구펀더·역추세) 계좌 조회\n"
@@ -679,6 +683,9 @@ class TradingBot:
     def run_fund6_market(self, market: str) -> None:
         """시장(US/KR)의 3트랙 편입 후보 알림 (데이터 1회 조회). 잔고 1주 필터 적용."""
         flag, kname = ("🇺🇸", "미국") if market == "US" else ("🇰🇷", "한국")
+        if market == "KR" and not self.client.is_open_day():
+            self.send("🇰🇷 오늘은 한국 증시 휴장일이에요 — 스캔을 건너뜁니다.")
+            return
         self.send(f"{flag} 펀더멘털 {kname} 3트랙 스캔 중... (재무조회, 1~2분)")
         try:
             per_track = scan_market(market, self.client)
@@ -697,6 +704,10 @@ class TradingBot:
         # 이미 보유 제외 + 잔고 1주 매수 가능 종목만 (v1.4)
         buyable = [c for c in cands if c["symbol"] not in held and c["price"] and cash >= c["price"]]
         affordable = {c["symbol"] for c in buyable}
+        # 저가 추적 감시 등록 (아직 미보유·매수가능 후보를 5거래일 지켜봄)
+        target_n = STRENGTH[TRACKS[tid]["strength"]]["target_n"]
+        for c in buyable:
+            fund6_watch.add(tid, c["symbol"], c["name"], target_n)
         text = f6_format(tid, cands, affordable=affordable)
         if led.get("halted"):
             self.send(text + f"\n\n🔴 {track_tag(tid)} 방어선 정지 중 — '재개' 후 편입 가능.")
@@ -762,6 +773,45 @@ class TradingBot:
                 self.send_buttons(f"{track_tag(tid)} 분기 점검 ⚠️ 근거 훼손 후보: {names}\n"
                                   f"(3박자 상위에서 탈락 — 주가 아니라 '근거'로 판단)", buttons)
 
+    def run_fund6_low_watch(self) -> None:
+        """저가 추적: 감시 종목이 최근 5거래일 저가 근처면 알림, 5거래일 지나면 만료 문의."""
+        today = date.today().isoformat()
+        kr_open = None
+        for tid, watch in fund6_watch.all_items().items():
+            if tid not in TRACKS or not watch:
+                continue
+            us = TRACKS[tid]["market"] == "US"
+            if not us:  # 한국은 휴장일이면 저가 알림 건너뜀
+                if kr_open is None:
+                    kr_open = self.client.is_open_day()
+                if not kr_open:
+                    continue
+            unit = "$" if us else "원"
+            held = set(paper_fund6.load_ledger(tid)["positions"].keys())
+            for sym, info in list(watch.items()):
+                if sym in held:  # 이미 편입 → 감시 해제
+                    fund6_watch.remove(tid, sym)
+                    continue
+                near, cur, low5 = fund6_watch.near_low(sym)
+                if cur <= 0:
+                    continue
+                if near and info.get("alerted") != today:
+                    fund6_watch.mark_alerted(tid, sym)
+                    self.send_buttons(
+                        f"📉 {track_tag(tid)} 저가 근처 — {info['name']}({sym})\n"
+                        f"   현재 {cur:,}{unit} · 최근 5거래일 저가 {low5:,}{unit} 부근\n"
+                        f"   지금 담기 좋은 자리일 수 있어요 (분할 매수 권장).",
+                        [{"text": f"📗편입 {info['name'][:10]}", "callback_data": f"f6buy:{tid}:{sym}"},
+                         {"text": "⏳ 더 기다림", "callback_data": f"f6wait:{tid}:{sym}"}])
+                elif (not info.get("alerted")
+                      and fund6_watch.days_since(info.get("rec_date", "")) >= fund6_watch.WATCH_DAYS):
+                    fund6_watch.remove(tid, sym)  # 만료 문의는 1회
+                    self.send_buttons(
+                        f"⏰ {track_tag(tid)} {info['name']}({sym}) — 5거래일 지켜봤지만 저가 알림이 없었어요.\n"
+                        f"   현재 {cur:,}{unit}. 지금 살까요, 다음 주로 넘길까요?",
+                        [{"text": "📗 현재가로 편입", "callback_data": f"f6buy:{tid}:{sym}"},
+                         {"text": "➡ 다음 주로", "callback_data": f"f6drop:{tid}:{sym}"}])
+
     def fund6_summary_text(self) -> str:
         lines = ["📊 펀더멘털 6트랙 현황"]
         for tid in TRACKS:
@@ -783,9 +833,10 @@ class TradingBot:
         uh, um = rules.US_RECOMMEND_TIME.split(":")
         us_time = dtime(int(uh), int(um))        # 20:00 미국 스캔
         defense_time = dtime(16, 0)              # 방어선 감시 시각(하루 1회)
+        low_time = dtime(15, 50)                 # 저가 추적 점검(하루 1회, 한국 마감 후)
         scan_day = rules.LONG_ALERT_DAY          # 목요일 주간 스캔
         offset = None
-        last_kr = last_us = last_def = last_quarter = None
+        last_kr = last_us = last_def = last_low = last_quarter = None
         while True:
             now = datetime.now()
             # 주간 한국 6트랙 스캔 (목 12:50)
@@ -802,6 +853,13 @@ class TradingBot:
                     self.run_fund6_market("US")
                 except Exception as e:
                     print(f"[봇] 미국 스캔 오류: {e!r}")
+            # 저가 추적 점검 (평일 15:50, 하루 1회)
+            if now.weekday() < 5 and now.time() >= low_time and last_low != now.date():
+                last_low = now.date()
+                try:
+                    self.run_fund6_low_watch()
+                except Exception as e:
+                    print(f"[봇] 저가추적 오류: {e!r}")
             # 트랙별 방어선 감시 (평일 16:00, 하루 1회)
             if now.weekday() < 5 and now.time() >= defense_time and last_def != now.date():
                 last_def = now.date()
@@ -868,6 +926,13 @@ class TradingBot:
             paper_fund6.set_paused(tid, True)
             self.send(f"⏸ {track_tag(tid)} 쉬기로 전환 — 알림·매매 멈춤('재개'로 복귀).")
             return
+        if action == "f6wait":
+            self.send(f"⏳ {track_tag(tid)} {sym} 계속 지켜볼게요 (저가 근처 오면 다시 알림).")
+            return
+        if action == "f6drop":
+            fund6_watch.remove(tid, sym)
+            self.send(f"➡ {track_tag(tid)} {sym} 이번 주기는 넘깁니다 (감시 해제).")
+            return
         try:
             price = paper_fund6.price_of(tid, sym)
         except Exception as e:
@@ -882,6 +947,8 @@ class TradingBot:
                 name = KR_FUND_UNIVERSE.get(sym, sym)
             target_n = STRENGTH[TRACKS[tid]["strength"]]["target_n"]
             r = paper_fund6.record_buy(tid, sym, name, price, target_n, note="3박자 편입")
+            if r.get("ok"):
+                fund6_watch.remove(tid, sym)  # 편입되면 저가 감시 해제
             self.send(f"{track_tag(tid)} " + r["msg"])
         elif action == "f6sell":
             r = paper_fund6.record_sell(tid, sym, price)
