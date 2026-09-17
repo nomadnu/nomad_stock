@@ -9,31 +9,45 @@ from __future__ import annotations
 
 from .broker import KISClient
 from .scanner_kr_fund import KR_FUND_UNIVERSE
-from .scanner_long import LONG_UNIVERSE
 from .tracks import TRACKS, is_us
 
-# 성장 상한: '우량성장주'(초고성장 아님) 취지 — 이익성장 폭발값(적자→흑자 등)이
-# 점수를 지배하지 않도록 매출성장 우선 + 상한을 둔다.
-GROWTH_CAP = 40.0
+# 미국 후보군 (v1.4): 성장주 + '꾸준한 우량 복리주'를 섞어 '차분한 우량성장' 취지에 맞춤.
+# 3박자(재무 관문 + 성장·밸류 점수)가 다양한 성격의 종목을 고를 수 있게 넓게.
+FUND6_US_UNIVERSE = [
+    # 성장/기술
+    "NVDA", "AMD", "AVGO", "AAPL", "MSFT", "GOOGL", "AMZN", "META", "NFLX", "CRM",
+    "ADBE", "NOW", "INTU", "PANW", "CRWD", "SNPS", "CDNS", "KLAC", "AMAT", "MU",
+    "QCOM", "ORCL", "UBER", "BKNG", "MELI", "ANET", "ISRG", "REGN", "VRTX", "MPWR",
+    # 꾸준한 우량 복리주 (배당·방어·필수소비·헬스케어·금융인프라)
+    "V", "MA", "COST", "UNH", "LLY", "PG", "KO", "PEP", "HD", "MCD",
+    "ABBV", "TMO", "ADP", "ACN", "TXN", "HON", "CAT", "SPGI", "MCO", "ICE",
+    "TJX", "LOW", "SYK", "ZTS", "ELV", "PGR", "MSI", "ITW", "ADI", "MMC",
+]
+
+# 성장 상한: '우량성장주'(초고성장 아님) 취지 — 매출성장 우선 + 상한.
+# 25% 이상은 다 25로 봐서 초고성장에 과한 가점을 주지 않음(밸류가 제대로 작동).
+GROWTH_CAP = 25.0
 
 # 강도별 파라미터(예시안) — 재무 관문 엄격도 + 편입 종목 수
 STRENGTH = {
-    "strict": {"target_n": 3, "roe_min": 15.0, "debt_max": 100.0},
-    "mid":    {"target_n": 5, "roe_min": 10.0, "debt_max": 150.0},
-    "loose":  {"target_n": 8, "roe_min": 8.0,  "debt_max": 200.0},
+    "strict": {"target_n": 3, "roe_min": 15.0, "debt_max": 100.0, "per_max": 40.0},
+    "mid":    {"target_n": 5, "roe_min": 10.0, "debt_max": 150.0, "per_max": 55.0},
+    "loose":  {"target_n": 8, "roe_min": 8.0,  "debt_max": 200.0, "per_max": 80.0},
 }
 
 
 def _value_score_us(peg, per) -> float:
+    """성장 감안 합리적 가격(GARP). PEG<1.5 가점·>1.5 감점(초고평가 배제). PEG 없으면 PER."""
     if peg and peg > 0:
-        return max(0.0, (2.5 - peg)) * 10  # PEG 낮을수록 가점
+        return max(-20.0, min(20.0, (1.5 - peg) * 20))
     if per and per > 0:
-        return max(0.0, (30 - per))
+        return max(-15.0, min(15.0, 25 - per))
     return 0.0
 
 
 def _value_score_kr(per) -> float:
-    return max(0.0, (15 - per)) if per and per > 0 else 0.0
+    """한국 PER 기준(평균 낮음). 12 근처를 적정으로, 비싸면 감점."""
+    return max(-15.0, min(15.0, 12 - per)) if per and per > 0 else 0.0
 
 
 def scan_us_fund(strength: str) -> list[dict]:
@@ -43,7 +57,7 @@ def scan_us_fund(strength: str) -> list[dict]:
     from .scanner import _us_meta
     p = STRENGTH[strength]
     scored = []
-    for sym in LONG_UNIVERSE:
+    for sym in FUND6_US_UNIVERSE:
         try:
             info = yf.Ticker(sym).info
         except Exception:
@@ -57,6 +71,9 @@ def scan_us_fund(strength: str) -> list[dict]:
         if dte is not None and dte > p["debt_max"]:
             continue
         if ocf is not None and ocf <= 0:
+            continue
+        per = info.get("trailingPE")
+        if per and per > p["per_max"]:      # 초고평가 배제(합리적 가격)
             continue
         g = info.get("revenueGrowth"); eg = info.get("earningsGrowth")
         raw = g if g is not None else eg          # 매출성장 우선(이익성장은 폭발값 잦음)
@@ -95,6 +112,8 @@ def scan_kr_fund6(client: KISClient, strength: str) -> list[dict]:
             per, price = q.get("per", 0.0), q.get("price", 0)
         except Exception:
             per, price = None, 0
+        if per and per > p["per_max"]:            # 초고평가 배제(합리적 가격)
+            continue
         raw = fr.get("rev_growth")
         if raw is None:
             raw = fr.get("op_growth")
