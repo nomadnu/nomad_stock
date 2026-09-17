@@ -12,6 +12,10 @@ from .scanner_kr_fund import KR_FUND_UNIVERSE
 from .scanner_long import LONG_UNIVERSE
 from .tracks import TRACKS, is_us
 
+# 성장 상한: '우량성장주'(초고성장 아님) 취지 — 이익성장 폭발값(적자→흑자 등)이
+# 점수를 지배하지 않도록 매출성장 우선 + 상한을 둔다.
+GROWTH_CAP = 40.0
+
 # 강도별 파라미터(예시안) — 재무 관문 엄격도 + 편입 종목 수
 STRENGTH = {
     "strict": {"target_n": 3, "roe_min": 15.0, "debt_max": 100.0},
@@ -55,7 +59,8 @@ def scan_us_fund(strength: str) -> list[dict]:
         if ocf is not None and ocf <= 0:
             continue
         g = info.get("revenueGrowth"); eg = info.get("earningsGrowth")
-        growth = max((g or 0), (eg or 0)) * 100
+        raw = g if g is not None else eg          # 매출성장 우선(이익성장은 폭발값 잦음)
+        growth = min((raw or 0) * 100, GROWTH_CAP)  # 초고성장 상한
         peg = info.get("trailingPegRatio") or info.get("pegRatio")
         per = info.get("trailingPE")
         score = growth + _value_score_us(peg, per)
@@ -90,7 +95,10 @@ def scan_kr_fund6(client: KISClient, strength: str) -> list[dict]:
             per, price = q.get("per", 0.0), q.get("price", 0)
         except Exception:
             per, price = None, 0
-        growth = max((fr.get("rev_growth") or 0), (fr.get("op_growth") or 0))
+        raw = fr.get("rev_growth")
+        if raw is None:
+            raw = fr.get("op_growth")
+        growth = min((raw or 0), GROWTH_CAP)      # 매출성장 우선 + 초고성장 상한
         score = growth + _value_score_kr(per)
         scored.append({
             "symbol": code, "name": name, "price": price,
