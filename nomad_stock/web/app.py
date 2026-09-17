@@ -154,98 +154,44 @@ def create_app() -> Flask:
     @app.route("/api/all")
     @login_required
     def api_all():
-        # 4트랙 종합 (A=한국KIS, B=미국추종, C=미국펀더, D=한국펀더 페이퍼). 역추세는 보류(제외).
-        from .. import paper_fund_kr, paper_long, paper_us, rules
-        cap = 10_000_000
+        # 펀더멘털 6트랙 (v1.4). 기존 트랙은 아카이브(대시보드 제외).
+        from .. import paper_fund6
+        from ..tracks import TRACKS
         tracks, holds = [], []
-
-        a = {"id": "A", "name": "추종 (한국)", "method": "볼린저 상단권 · 단기 · 한투 모의", "cap": cap}
-        try:
-            bal = client.get_balance()
-            a["eval"] = bal["total_eval"]
-            a["ret"] = (bal["total_eval"] / cap - 1) * 100 if cap else 0
-            a["holds"] = len(bal["holdings"])
-            a["cash_pct"] = bal["cash"] / bal["total_eval"] * 100 if bal["total_eval"] else 0
-            for h in bal["holdings"]:
-                pct = (h["cur_price"] / h["avg_price"] - 1) * 100 if h["avg_price"] else 0
-                holds.append({"name": h["name"], "track": "A", "buy": f"{h['avg_price']:,}",
-                              "cur": f"{h['cur_price']:,}", "pct": pct})
-        except Exception as e:
-            a["error"] = str(e)[:60]
-        tracks.append(a)
-
-        def paper(tid, name, method, mod, spx=False):
-            t = {"id": tid, "name": name, "method": method, "cap": cap}
+        for tid, meta in TRACKS.items():
+            t = {"id": tid, "label": meta["label"], "flag": meta["flag"],
+                 "color": meta["color"], "market": meta["market"], "strength": meta["strength"],
+                 "bench_name": "코스피200" if meta["market"] == "KR" else "S&P500",
+                 "bench_warn": meta["market"] == "KR"}
             try:
-                e = mod.evaluate()
+                e = paper_fund6.evaluate(tid)
+                t["cap"] = e["capital_krw"]
                 t["eval"] = e["total_krw"]
-                t["ret"] = e["pnl_krw"] / cap * 100 if cap else 0
-                t["holds"] = len(e["rows"])
-                t["cash_pct"] = e["cash_usd"] / e["total_usd"] * 100 if e["total_usd"] else 0
-                if spx and "excess" in e:
-                    t["excess"] = e["excess"]
+                t["ret"] = round(e["ret"], 2)
+                t["holds"] = e["holds"]
+                t["cash_pct"] = round(e["cash_pct"], 1)
+                t["bench"] = round(e["bench_ret"], 2)
+                t["edge"] = round(e["excess"], 2)
+                t["halted"] = e["halted"]
+                t["paused"] = e["paused"]
                 for r in e["rows"]:
-                    holds.append({"name": r["name"], "track": tid, "buy": f"${r['avg_usd']}",
-                                  "cur": f"${r['cur_usd']}", "pct": r["pct"]})
+                    holds.append({"name": r["name"], "track": tid, "flag": meta["flag"],
+                                  "color": meta["color"], "buy": r["buy_disp"],
+                                  "cur": r["cur_disp"], "pct": round(r["pct"], 1)})
             except Exception as ex:
+                t["cap"] = 10_000_000
                 t["error"] = str(ex)[:60]
-            return t
+            tracks.append(t)
 
-        def paper_kr(tid, name, method, mod):
-            # 원화 네이티브 장부(한국 펀더멘털). 벤치마크는 bench 로직(코스피200·경고)에 위임.
-            t = {"id": tid, "name": name, "method": method, "cap": cap}
-            try:
-                e = mod.evaluate()
-                t["eval"] = e["total_krw"]
-                t["ret"] = e["pnl_krw"] / cap * 100 if cap else 0
-                t["holds"] = len(e["rows"])
-                t["cash_pct"] = e["cash_krw"] / e["total_krw"] * 100 if e["total_krw"] else 0
-                for r in e["rows"]:
-                    holds.append({"name": r["name"], "track": tid, "buy": f"{r['avg_krw']:,}",
-                                  "cur": f"{r['cur_krw']:,}", "pct": r["pct"]})
-            except Exception as ex:
-                t["error"] = str(ex)[:60]
-            return t
-
-        tracks.append(paper("B", "추종 (미국)", "볼린저 상단권 · 단기 · 페이퍼", paper_us))
-        tracks.append(paper("C", "펀더멘털 (미국)", "3박자 필터 · 장기 · 페이퍼", paper_long, spx=True))
-        tracks.append(paper_kr("D", "펀더멘털 (한국)", "3박자 필터 · 장기 · 페이퍼", paper_fund_kr))
-
-        # ----- 트랙별 시장(벤치마크) 대비 비교 : 각 트랙 시작일 기준 -----
-        try:
-            starts = {
-                "A": rules.TRACK_A_START,
-                "B": paper_us.ledger_start(paper_us.load_ledger()),
-                "C": (paper_long.load_ledger().get("start_date")
-                      or paper_us.ledger_start(paper_long.load_ledger())),
-                "D": (paper_fund_kr.load_ledger().get("start_date") or rules.TRACK_A_START),
-            }
-        except Exception:
-            starts = {}
-        bench_tk = {"A": ("KS200", "코스피200"), "B": ("US500", "S&P500"),
-                    "C": ("US500", "S&P500"), "D": ("KS200", "코스피200")}
-        bvals = []
-        for t in tracks:
-            tk, bname = bench_tk[t["id"]]
-            t["bench_name"] = bname
-            start = starts.get(t["id"])
-            if start and not t.get("error"):
-                br = paper_us.index_return(tk, start)
-                if br is not None:
-                    t["bench"] = round(br, 2)
-                    t["edge"] = round(t["ret"] - br, 2)
-                    if t["id"] in ("A", "D"):
-                        t["bench_warn"] = True   # 한국 지수(코스피200) 무료 데이터 불안정 → 참고용 경고
-                    else:
-                        bvals.append(br)         # 총 시장평균엔 신뢰 가능한 미국(S&P500)만
-
-        total_eval = sum(t.get("eval", t["cap"]) for t in tracks)
-        total_cap = sum(t["cap"] for t in tracks)
-        total_ret = (total_eval / total_cap - 1) * 100 if total_cap else 0
-        total_bench = round(sum(bvals) / len(bvals), 2) if bvals else None
+        total_cap = sum(t.get("cap", 10_000_000) for t in tracks)
+        total_eval = sum(t.get("eval", t.get("cap", 10_000_000)) for t in tracks)
+        total_ret = round((total_eval / total_cap - 1) * 100, 2) if total_cap else 0
+        # 총 시장평균: 신뢰 가능한 미국(S&P500)만
+        us_bench = [t["bench"] for t in tracks if t["market"] == "US" and "bench" in t]
+        total_bench = round(sum(us_bench) / len(us_bench), 2) if us_bench else None
         return jsonify({"tracks": tracks, "holdings": holds, "total_cap": total_cap,
                         "total_eval": total_eval, "total_pnl": total_eval - total_cap,
-                        "total_ret": round(total_ret, 2), "total_bench": total_bench})
+                        "total_ret": total_ret, "total_bench": total_bench})
 
     @app.route("/manifest.json")
     def manifest():
@@ -308,52 +254,50 @@ _HTML = """<!doctype html>
 <meta name="apple-mobile-web-app-title" content="nomad_stock">
 <meta name="theme-color" content="#0e1116">
 <style>
-:root{--bg:#0e1116;--panel:#161b22;--panel-2:#1c232d;--line:#26303c;--ink:#e6edf3;--ink-dim:#8b98a5;--ink-faint:#5b6570;--up:#3fb950;--down:#f85149;--A:#4c8dff;--B:#5ac8fa;--C:#c07cff;--D:#ffb454;--mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+:root{--bg:#0e1116;--panel:#161b22;--panel-2:#1c232d;--line:#26303c;--ink:#e6edf3;--ink-dim:#8b98a5;--ink-faint:#5b6570;--up:#3fb950;--down:#f85149;--mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'Malgun Gothic',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--ink);padding:20px 14px 44px;max-width:920px;margin:0 auto}
+body{font-family:'Malgun Gothic',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--ink);padding:20px 14px 44px;max-width:960px;margin:0 auto}
 .num{font-family:var(--mono);letter-spacing:-.02em} .up{color:var(--up)} .down{color:var(--down)}
-header{display:flex;justify-content:space-between;align-items:flex-end;padding-bottom:16px;border-bottom:1px solid var(--line);margin-bottom:20px;flex-wrap:wrap;gap:8px}
+header{display:flex;justify-content:space-between;align-items:flex-end;padding-bottom:16px;border-bottom:1px solid var(--line);margin-bottom:18px;flex-wrap:wrap;gap:8px}
 .title{font-size:19px;font-weight:700} .subtitle{font-size:12px;color:var(--ink-faint);margin-top:3px}
 .asof{font-size:12px;color:var(--ink-dim);text-align:right} .asof .t{font-family:var(--mono);color:var(--ink);font-size:13px}
-.total{display:flex;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;margin-bottom:22px}
-.total>div{flex:1;padding:14px 16px;border-right:1px solid var(--line)} .total>div:last-child{border-right:0}
-.total .k{font-size:11px;color:var(--ink-dim);margin-bottom:6px} .total .v{font-size:20px;font-weight:700} .total .v.sub{font-size:15px}
-.total .v .mkt{font-size:13px;color:var(--ink-dim);font-weight:600}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px} @media(max-width:560px){.grid{grid-template-columns:1fr}}
+.total{display:flex;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;margin-bottom:20px}
+.total>div{flex:1;padding:13px 15px;border-right:1px solid var(--line)} .total>div:last-child{border-right:0}
+.total .k{font-size:11px;color:var(--ink-dim);margin-bottom:5px} .total .v{font-size:18px;font-weight:700} .total .v.sub{font-size:14px}
+.total .v .mkt{font-size:12px;color:var(--ink-dim);font-weight:600}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:11px} @media(max-width:600px){.grid{grid-template-columns:1fr}}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
-.spine{height:3px;width:100%} .cbody{padding:15px 16px 16px}
-.tag{font-size:10px;font-weight:700;letter-spacing:.04em;padding:2px 7px;border-radius:5px;color:#0e1116}
-.card h3{font-size:15px;font-weight:700;margin-top:9px} .method{font-size:11px;color:var(--ink-dim);margin-top:2px}
-.ret{font-size:26px;font-weight:800;margin:12px 0 2px;display:flex;align-items:baseline;flex-wrap:wrap;gap:7px}
-.mkt{font-size:14px;font-weight:600;color:var(--ink-dim);font-family:var(--mono)} .mkt b{font-weight:700}
-.edge{display:inline-block;margin-top:6px;font-size:12px;font-weight:700;padding:3px 8px;border-radius:6px;font-family:var(--mono)}
-.edge.win{background:rgba(63,185,80,.14);color:var(--up)} .edge.lose{background:rgba(248,81,73,.14);color:var(--down)}
-.edge.warn{background:rgba(139,152,165,.15);color:var(--ink-dim)}
-.evalline{font-size:12px;color:var(--ink-dim);margin-top:8px} .evalline .num{color:var(--ink)}
-.bench{font-size:11px;margin-top:9px;color:var(--ink-dim)}
-.meta{display:flex;gap:14px;margin-top:12px;padding-top:12px;border-top:1px solid var(--line);flex-wrap:wrap}
+.spine{height:3px;width:100%} .cbody{padding:13px 15px 14px}
+.chead{display:flex;justify-content:space-between;align-items:center}
+.label{font-size:14px;font-weight:700} .method{font-size:11px;color:var(--ink-dim);margin-top:2px}
+.state{font-size:10px;padding:2px 7px;border-radius:5px;font-weight:700}
+.state.halt{background:rgba(248,81,73,.16);color:var(--down)} .state.pause{background:rgba(139,152,165,.16);color:var(--ink-dim)} .state.ok{background:rgba(63,185,80,.14);color:var(--up)}
+.ret{font-size:23px;font-weight:800;margin:10px 0 2px;display:flex;align-items:baseline;flex-wrap:wrap;gap:6px}
+.mkt{font-size:13px;font-weight:600;color:var(--ink-dim);font-family:var(--mono)} .mkt b{font-weight:700}
+.edge{display:inline-block;margin-top:5px;font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px;font-family:var(--mono)}
+.edge.win{background:rgba(63,185,80,.14);color:var(--up)} .edge.lose{background:rgba(248,81,73,.14);color:var(--down)} .edge.warn{background:rgba(139,152,165,.15);color:var(--ink-dim)}
+.evalline{font-size:12px;color:var(--ink-dim);margin-top:7px} .evalline .num{color:var(--ink)}
+.meta{display:flex;gap:14px;margin-top:10px;padding-top:10px;border-top:1px solid var(--line)}
 .meta div{font-size:11px;color:var(--ink-faint)} .meta div b{display:block;font-size:13px;color:var(--ink);margin-top:2px}
-.compare,.holds{margin-top:24px;background:var(--panel);border:1px solid var(--line);border-radius:12px}
-.compare{padding:18px 16px} .compare h2,.holds h2{font-size:13px;font-weight:700;color:var(--ink)}
-.compare h2{margin-bottom:16px} .compare h2 span{font-weight:500;color:var(--ink-faint)} .holds h2{padding:16px 16px 12px}
-.bar-row{display:flex;align-items:center;gap:10px;margin-bottom:12px}
-.bar-label{width:120px;font-size:12px;flex-shrink:0;line-height:1.35} .bar-label small{font-size:10px;color:var(--ink-faint);font-family:var(--mono)}
-.bar-track{flex:1;height:22px;background:var(--panel-2);border-radius:5px;position:relative;overflow:hidden}
+.compare,.holds{margin-top:22px;background:var(--panel);border:1px solid var(--line);border-radius:12px}
+.compare{padding:16px 15px} .compare h2,.holds h2{font-size:13px;font-weight:700;color:var(--ink)}
+.compare h2{margin-bottom:14px} .holds h2{padding:15px 15px 11px}
+.bar-row{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.bar-label{width:130px;font-size:12px;flex-shrink:0} .bar-track{flex:1;height:20px;background:var(--panel-2);border-radius:5px;position:relative;overflow:hidden}
 .bar-zero{position:absolute;left:50%;top:0;bottom:0;width:1px;background:var(--ink-faint);opacity:.5}
-.bar-fill{position:absolute;top:0;bottom:0;border-radius:4px;opacity:.9} .bar-val{width:60px;text-align:right;font-size:13px;font-weight:700;flex-shrink:0}
+.bar-fill{position:absolute;top:0;bottom:0;border-radius:4px;opacity:.9} .bar-val{width:54px;text-align:right;font-size:12px;font-weight:700}
 .holds{overflow:hidden} table{width:100%;border-collapse:collapse}
-th,td{text-align:right;padding:9px 16px;font-size:12px;border-top:1px solid var(--line)} th{color:var(--ink-faint);font-size:11px}
+th,td{text-align:right;padding:8px 15px;font-size:12px;border-top:1px solid var(--line)} th{color:var(--ink-faint);font-size:11px}
 td:first-child,th:first-child{text-align:left}
 .chip{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px;vertical-align:middle}
-.badge{font-size:10px;padding:1px 5px;border-radius:4px;background:var(--panel-2);color:var(--ink-dim)}
-.note{margin-top:16px;padding:11px 13px;background:rgba(255,180,84,.07);border:1px solid rgba(255,180,84,.22);border-radius:9px;font-size:11px;color:var(--D);line-height:1.5}
+.note{margin-top:16px;padding:11px 13px;background:var(--panel);border:1px solid var(--line);border-radius:9px;font-size:11px;color:var(--ink-dim);line-height:1.6}
 button{background:var(--panel-2);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:7px 14px;cursor:pointer;font-size:13px}
-footer{margin-top:18px;font-size:11px;color:var(--ink-faint);text-align:center;line-height:1.6}
+footer{margin-top:16px;font-size:11px;color:var(--ink-faint);text-align:center;line-height:1.6}
 </style></head>
 <body>
 <header>
-  <div><div class="title">nomad_stock 페이퍼 대시보드</div>
-  <div class="subtitle">4개 전략 비교 · 같은 장세, 다른 기법</div></div>
+  <div><div class="title">nomad_stock 펀더멘털 6트랙</div>
+  <div class="subtitle">필터 강도 비교 · 미국 A/B/C · 한국 1/2/3</div></div>
   <div class="asof">기준 시각<br><span class="t" id="asof">-</span></div>
 </header>
 <div class="total">
@@ -362,29 +306,32 @@ footer{margin-top:18px;font-size:11px;color:var(--ink-faint);text-align:center;l
   <div><div class="k">총 손익 (vs 시장)</div><div class="v sub num" id="tpnl">-</div></div>
 </div>
 <div class="grid" id="cards"></div>
-<div class="compare"><h2>전략별 수익률 비교 <span>— 괄호는 각 트랙 시작 후 시장 평균</span></h2><div id="bars"></div></div>
+<div class="compare"><h2>트랙별 수익률 비교 <span style="font-weight:500;color:var(--ink-faint)">— 괄호는 시작 후 시장</span></h2><div id="bars"></div></div>
 <div class="holds"><h2>보유 종목 (전 트랙)</h2>
-  <table><thead><tr><th>종목</th><th>트랙</th><th>매수가</th><th>현재가</th><th>수익률</th><th>구분</th></tr></thead>
+  <table><thead><tr><th>종목</th><th>트랙</th><th>매수가</th><th>현재가</th><th>수익률</th></tr></thead>
   <tbody id="holdrows"></tbody></table></div>
-<div class="note">📌 벤치마크는 <b>각 트랙이 실제 매매를 시작한 날</b>부터 지수 수익률입니다. 한국 지수는 무료 데이터라 가끔 값이 튈 수 있어 <b>참고용</b>으로만 보세요.</div>
+<div class="note">📌 6트랙 모두 페이퍼(모의). 변수는 <b>필터 강도(엄선·균형·폭넓게)</b> 하나 — 같은 전략을 강도만 달리해 비교합니다. 손절 없음(장기), 트랙별 방어선 −15%. 한국 벤치마크(코스피200)는 무료 데이터라 참고용 ⚠. 매매·재개는 텔레그램 봇으로.</div>
 <div style="margin:16px 0"><button onclick="load()">새로고침</button>
   {% if auth %}<a href="/logout" style="color:#8b98a5;font-size:12px;margin-left:12px">로그아웃</a>{% endif %}</div>
-<footer>A·B·C·D 모두 페이퍼/모의 · 실제 돈 안 걸림 · 역추세는 보류(비활성)<br>추종(A·B) 손절 -7% 자동 · 펀더멘털(C·D) 손절 없음(장기·근거훼손 시 매도) · 한 종목 20%</footer>
+<footer>기존 추종·구펀더·역추세 트랙은 아카이브(비활성)로 보존 · 텔레그램 '아카이브'로 조회</footer>
 <script>
-const C={A:'#4c8dff',B:'#5ac8fa',C:'#c07cff',D:'#ffb454'};
 const won=n=>Math.round(n).toLocaleString('ko-KR');
-const sg=v=>(v>=0?'+':'')+v.toFixed(1);
-function edgeHtml(t){
-  if(t.edge==null) return '';
-  if(t.bench_warn) return `<span class="edge warn">⚠ ${t.bench_name} 데이터 불안정 · 비교 참고불가</span>`;
-  const win=t.edge>=0;
-  return `<span class="edge ${win?'win':'lose'}">${sg(t.edge)}%p ${win?'선방':'뒤짐'}</span>`;
+const sg=v=>(v>=0?'+':'')+Number(v).toFixed(1);
+function stateBadge(t){
+  if(t.paused) return '<span class="state pause">⏸ 쉬기</span>';
+  if(t.halted) return '<span class="state halt">🔴 정지</span>';
+  return '<span class="state ok">🟢</span>';
 }
 function mktHtml(t){
-  if(t.bench==null) return '<span class="mkt">(시장 데이터 없음)</span>';
-  const cls=t.bench>=0?'up':'down';
-  const warn=t.bench_warn?' ⚠':'';
+  if(t.bench==null) return '';
+  const cls=t.bench>=0?'up':'down', warn=t.bench_warn?' ⚠':'';
   return `<span class="mkt">(${t.bench_name} <b class="${cls}">${sg(t.bench)}%</b>${warn})</span>`;
+}
+function edgeHtml(t){
+  if(t.edge==null) return '';
+  if(t.bench_warn) return `<span class="edge warn">${t.bench_name} ⚠ 참고용</span>`;
+  const win=t.edge>=0;
+  return `<span class="edge ${win?'win':'lose'}">${sg(t.edge)}%p ${win?'선방':'뒤짐'}</span>`;
 }
 async function load(){
   let d; try{ d=await (await fetch('/api/all')).json(); }catch(e){ document.getElementById('asof').textContent='조회실패'; return; }
@@ -396,39 +343,36 @@ async function load(){
   tp.innerHTML=sg(d.total_ret)+'%'+mkt;
   tp.className='v sub num '+(d.total_ret>=0?'up':'down');
   const cw=document.getElementById('cards'); cw.innerHTML='';
-  d.tracks.forEach(t=>{ const col=C[t.id];
+  d.tracks.forEach(t=>{ const col=t.color;
     let inner;
     if(t.error){
-      inner=`<div class="ret"><span class="down" style="font-size:18px">KIS 조회 실패</span></div>
-        <div class="evalline down">잠시 후 다시 시도됩니다</div>`;
+      inner=`<div class="ret"><span class="down" style="font-size:16px">조회 실패</span></div>`;
     }else{
       const rcls=t.ret>=0?'up':'down';
-      const bench=(t.excess!=null)?`<div class="bench">S&P500 대비 초과 <b class="num ${t.excess>=0?'up':'down'}">${sg(t.excess)}%p</b></div>`:'';
       inner=`<div class="ret"><span class="num ${rcls}">${sg(t.ret)}%</span>${mktHtml(t)}</div>
         ${edgeHtml(t)}
         <div class="evalline">평가 <span class="num">${won(t.eval)}원</span> · 원금 <span class="num">${won(t.cap)}원</span></div>
-        ${bench}
         <div class="meta"><div>보유<b class="num">${t.holds}종목</b></div><div>현금<b class="num">${Math.round(t.cash_pct)}%</b></div></div>`;
     }
     cw.innerHTML+=`<div class="card"><div class="spine" style="background:${col}"></div><div class="cbody">
-      <span class="tag" style="background:${col}">${t.id}</span><h3>${t.name}</h3><div class="method">${t.method}</div>
+      <div class="chead"><div><div class="label">${t.flag} ${t.label}</div><div class="method">${t.market==='US'?'미국·S&P500':'한국·코스피200'} · 3박자</div></div>${stateBadge(t)}</div>
       ${inner}</div></div>`;
   });
   const valid=d.tracks.filter(t=>!t.error), mx=Math.max(5,...valid.map(t=>Math.abs(t.ret)));
   const bw=document.getElementById('bars'); bw.innerHTML='';
-  d.tracks.forEach(t=>{ const col=C[t.id];
-    const sub=(t.bench!=null)?`<br><small>(${t.bench_name} ${sg(t.bench)}%${t.bench_warn?' ⚠':''})</small>`:'';
-    if(t.error){ bw.innerHTML+=`<div class="bar-row"><div class="bar-label"><span class="chip" style="background:${col}"></span>${t.id} ${t.name}</div><div class="bar-track"></div><div class="bar-val">-</div></div>`; return; }
+  d.tracks.forEach(t=>{ const col=t.color;
+    if(t.error){ bw.innerHTML+=`<div class="bar-row"><div class="bar-label"><span class="chip" style="background:${col}"></span>${t.label}</div><div class="bar-track"></div><div class="bar-val">-</div></div>`; return; }
     const w=Math.abs(t.ret)/mx*48, left=t.ret>=0?50:50-w;
-    bw.innerHTML+=`<div class="bar-row"><div class="bar-label"><span class="chip" style="background:${col}"></span>${t.id} ${t.name}${sub}</div>
+    const sub=(t.bench!=null)?`<br><small style="font-size:10px;color:var(--ink-faint)">(${t.bench_name} ${sg(t.bench)}%${t.bench_warn?' ⚠':''})</small>`:'';
+    bw.innerHTML+=`<div class="bar-row"><div class="bar-label"><span class="chip" style="background:${col}"></span>${t.flag} ${t.label}${sub}</div>
       <div class="bar-track"><div class="bar-zero"></div><div class="bar-fill" style="left:${left}%;width:${w}%;background:${col}"></div></div>
       <div class="bar-val ${t.ret>=0?'up':'down'}">${sg(t.ret)}%</div></div>`;
   });
   const hr=document.getElementById('holdrows'); hr.innerHTML='';
-  if(!d.holdings.length){ hr.innerHTML='<tr><td colspan="6" style="text-align:center;color:var(--ink-faint);padding:16px">보유 종목 없음</td></tr>'; }
-  d.holdings.forEach(h=>{ hr.innerHTML+=`<tr><td><span class="chip" style="background:${C[h.track]}"></span>${h.name}</td>
-    <td>${h.track}</td><td class="num">${h.buy}</td><td class="num">${h.cur}</td>
-    <td class="num ${h.pct>=0?'up':'down'}">${sg(h.pct)}%</td><td><span class="badge">봇</span></td></tr>`; });
+  if(!d.holdings.length){ hr.innerHTML='<tr><td colspan="5" style="text-align:center;color:var(--ink-faint);padding:16px">보유 종목 없음 (편입 전)</td></tr>'; }
+  d.holdings.forEach(h=>{ hr.innerHTML+=`<tr><td><span class="chip" style="background:${h.color}"></span>${h.name}</td>
+    <td>${h.flag}</td><td class="num">${h.buy}</td><td class="num">${h.cur}</td>
+    <td class="num ${h.pct>=0?'up':'down'}">${sg(h.pct)}%</td></tr>`; });
 }
 load(); setInterval(load, 30000);
 </script>
