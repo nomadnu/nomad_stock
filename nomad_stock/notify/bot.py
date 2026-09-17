@@ -17,8 +17,13 @@ from zoneinfo import ZoneInfo
 
 import requests
 
-from .. import paper_fund_kr, paper_long, paper_track_d, paper_us, rules
+from .. import paper_fund6, paper_fund_kr, paper_long, paper_track_d, paper_us, rules
 from ..broker import KISClient
+from ..scanner_fund6 import STRENGTH
+from ..scanner_fund6 import format_candidates as f6_format
+from ..scanner_fund6 import scan_market, scan_track
+from ..tracks import TRACKS
+from ..tracks import tag as track_tag
 from ..live.market_hours import is_market_open, market_status
 from ..live.risk import RiskConfig, RiskManager
 from ..rebalance import SELL as _REVIEW_SELL, review_holdings
@@ -69,76 +74,60 @@ class TradingBot:
         parts = text.strip().split()
         cmd = parts[0].lower().lstrip("/") if parts else ""
         arg = parts[1] if len(parts) > 1 else ""
-        if cmd in ("잔고", "잔액", "balance"):
-            return self.balance_text()
-        if cmd in ("손익", "수익", "pnl"):
-            return self.pnl_text()
-        if cmd in ("오늘", "오늘매매", "today"):
-            return self.today_text()
-        if cmd in ("신호", "signal"):
-            return self.signal_text()
-        if cmd in ("상태", "status"):
-            return self.status_text()
-        if cmd in ("정지", "stop", "kill"):
-            return self.stop_text()
-        if cmd in ("재개", "resume"):
-            return self.resume_text()
+        # ---- 펀더멘털 6트랙 (현행) ----
+        if cmd in ("현황", "상태", "트랙", "6트랙", "status"):
+            return self.fund6_summary_text()
+        if cmd in ("스캔", "scan"):
+            self.run_fund6_market("KR")
+            self.run_fund6_market("US")
+            return "🔎 6트랙 편입 후보 스캔 실행 (위 결과)."
+        if cmd in ("스캔한국", "한국스캔"):
+            self.run_fund6_market("KR")
+            return "🇰🇷 한국 3트랙 스캔 실행."
+        if cmd in ("스캔미국", "미국스캔"):
+            self.run_fund6_market("US")
+            return "🇺🇸 미국 3트랙 스캔 실행."
+        if cmd in ("점검", "분기점검", "review"):
+            self.run_fund6_review()
+            return "🔎 6트랙 분기 점검 실행 (위 결과)."
         if cmd in ("현재가", "price"):
             return self.price_text(arg)
-        if cmd in ("원금변경", "setcapital"):
-            return self.setcapital_text(arg)
-        if cmd in ("재평가", "점검", "review"):
-            self.run_weekly_review()
-            return "📊 주간 재평가를 실행했어요 (위 결과 확인)."
-        if cmd in ("미국", "미장", "us"):
-            self.run_us_paper_alert()
-            return "🇺🇸 미국 페이퍼 알림을 실행했어요 (위 결과 확인)."
+        if cmd in ("정지", "stop", "재개", "resume"):
+            return ("6트랙은 트랙별로 관리해요. 방어선 알림의 [재개]·[이 트랙 쉬기] "
+                    "버튼을 쓰시고, '현황'으로 상태를 확인하세요.")
+        # ---- 아카이브(비활성) 조회 ----
+        if cmd in ("아카이브", "구트랙"):
+            return ("📦 아카이브(비활성) — 조회만 가능:\n"
+                    "• 잔고(구 한국추종) · 미국잔고(구 미국추종)\n"
+                    "• 장기잔고(구 미국펀더) · 한펀잔고(구 한국펀더) · 역추세계좌")
+        if cmd in ("잔고", "잔액", "balance", "손익", "수익", "pnl"):
+            return "📦 (아카이브) 구 한국 추종 계좌\n" + self.balance_text()
         if cmd in ("미국잔고", "미국계좌", "usbalance"):
-            return paper_us.format_balance()
-        if cmd in ("역추세", "역추세잔고"):
-            return ("⏸ 역추세 트랙은 보류(비활성) 상태예요 (v2 개편).\n"
-                    "새 추천은 없고, 계좌·데이터는 그대로 보존됩니다. "
-                    "상승장 전환 시 재검토.\n\n" + paper_track_d.format_balance())
-        if cmd in ("역추세계좌", "역추세잔액"):
-            return paper_track_d.format_balance()
-        if cmd in ("장기", "장기편입", "long"):
-            self.run_long_alert()
-            return "📗 미국 장기 편입 후보를 스캔했어요 (위 결과)."
+            return "📦 (아카이브) " + paper_us.format_balance()
         if cmd in ("장기잔고", "장기계좌"):
-            return paper_long.format_balance()
-        if cmd in ("한펀", "한국펀더", "한국펀더멘털", "krfund", "d"):
-            self.run_kr_fund_alert()
-            return "📘 한국 펀더멘털 편입 후보를 스캔했어요 (위 결과)."
-        if cmd in ("한펀잔고", "한국펀더잔고", "한국펀더멘털잔고", "krbalance"):
-            return paper_fund_kr.format_balance()
-        if cmd in ("장기점검", "분기점검"):
-            self.run_long_review()
-            return "📗 장기 분기 점검을 실행했어요 (위 결과)."
+            return "📦 (아카이브) " + paper_long.format_balance()
+        if cmd in ("한펀잔고", "한국펀더잔고", "krbalance"):
+            return "📦 (아카이브) " + paper_fund_kr.format_balance()
+        if cmd in ("역추세계좌", "역추세잔액"):
+            return "📦 (아카이브) " + paper_track_d.format_balance()
+        if cmd in ("미국", "장기", "한펀", "역추세", "재평가", "미장", "us", "long", "krfund", "d"):
+            return ("이 트랙은 아카이브(비활성)로 전환됐어요 (펀더멘털 6트랙 체제).\n"
+                    "현행: '현황'·'스캔'. 지난 계좌는 '아카이브'로 조회.")
         if cmd in ("도움말", "명령", "help", "?", "start"):
             return self.help_text()
         return "모르는 명령이에요.\n" + self.help_text()
 
     def help_text(self) -> str:
         return (
-            "📖 명령 목록\n"
-            "• 잔고 — 예수금·보유종목·손익\n"
-            "• 손익 — 평가손익 요약\n"
+            "📖 명령 (펀더멘털 6트랙 v1.4)\n"
+            "• 현황 — 6트랙 수익률·보유·현금 요약\n"
+            "• 스캔 — 6트랙 편입 후보 알림 (한국+미국)\n"
+            "• 스캔한국 / 스캔미국 — 시장별 스캔\n"
+            "• 점검 — 분기 3박자 재점검\n"
             "• 현재가 [종목코드] — 예: 현재가 005930\n"
-            "• 오늘 — 오늘 매매 내역\n"
-            "• 신호 — 전략 현재 신호\n"
-            "• 상태 — 봇 가동/정지·한도·방어선\n"
-            "• 재평가 — 보유종목 주간 점검 (수동 실행)\n"
-            "• 미국 — 미국 추종(B) 페이퍼 후보 알림\n"
-            "• 미국잔고 — 미국 추종(B) 계좌\n"
-            "• 장기 — 미국 펀더멘털(C) 3박자 편입 후보\n"
-            "• 장기잔고 — 미국 펀더멘털(C) 계좌 (S&P500 대비)\n"
-            "• 한펀 — 한국 펀더멘털(D) 3박자 편입 후보\n"
-            "• 한펀잔고 — 한국 펀더멘털(D) 계좌 (코스피200 대비)\n"
-            "• 역추세계좌 — 역추세(보류) 계좌 조회\n"
-            "• 정지 / 재개 — 자동매매 킬스위치\n"
-            "• 원금변경 [금액] — 운용원금 변경\n"
-            "• myid — 내 chat_id 확인\n"
-            "• 도움말 — 이 안내"
+            "• 아카이브 — 지난 트랙(추종·구펀더·역추세) 계좌 조회\n"
+            "• myid — 내 chat_id 확인 · 도움말 — 이 안내\n\n"
+            "편입/매도/재개는 알림의 버튼으로. 방어선은 트랙별 -15%."
         )
 
     def status_text(self) -> str:
@@ -686,99 +675,149 @@ class TradingBot:
             except Exception as e:
                 self.send(f"⚠️ {hit.symbol} 손절 주문 실패: {e}")
 
+    # ===== 펀더멘털 6트랙 (v1.4) =====
+    def run_fund6_market(self, market: str) -> None:
+        """시장(US/KR)의 3트랙 편입 후보 알림 (데이터 1회 조회). 잔고 1주 필터 적용."""
+        flag, kname = ("🇺🇸", "미국") if market == "US" else ("🇰🇷", "한국")
+        self.send(f"{flag} 펀더멘털 {kname} 3트랙 스캔 중... (재무조회, 1~2분)")
+        try:
+            per_track = scan_market(market, self.client)
+        except Exception as e:
+            self.send(f"{flag} {kname} 스캔 실패: {e}")
+            return
+        for tid, cands in per_track.items():
+            self._fund6_alert_one(tid, cands)
+
+    def _fund6_alert_one(self, tid: str, cands: list[dict]) -> None:
+        led = paper_fund6.load_ledger(tid)
+        if led.get("paused"):
+            return  # '쉬기' 트랙은 스캔 알림 건너뜀
+        held = set(led["positions"].keys())
+        cash = led["cash"]
+        # 이미 보유 제외 + 잔고 1주 매수 가능 종목만 (v1.4)
+        buyable = [c for c in cands if c["symbol"] not in held and c["price"] and cash >= c["price"]]
+        affordable = {c["symbol"] for c in buyable}
+        text = f6_format(tid, cands, affordable=affordable)
+        if led.get("halted"):
+            self.send(text + f"\n\n🔴 {track_tag(tid)} 방어선 정지 중 — '재개' 후 편입 가능.")
+            return
+        if not buyable:
+            if cands:
+                text += "\n\n⚠️ 남은 현금으로 살 수 있는 후보가 없어요(현금 소진/고가). 매수 대기."
+            self.send(text)
+            return
+        buttons = [{"text": f"📗편입 {c['name'][:10]}", "callback_data": f"f6buy:{tid}:{c['symbol']}"}
+                   for c in buyable]
+        buttons.append({"text": "❌ 보류", "callback_data": f"f6ignore:{tid}"})
+        self.send_buttons(text, buttons)
+
+    def run_fund6_defense(self) -> None:
+        """트랙별 방어선(-15%) 감시. 회복 시 자동 해제, 밑이면 하루 1회 정지+알림(재정지)."""
+        today = date.today().isoformat()
+        for tid in TRACKS:
+            try:
+                led = paper_fund6.load_ledger(tid)
+                if led.get("paused"):
+                    continue
+                breached, ret = paper_fund6.defense_breached(tid)
+                if not breached:
+                    if led.get("halted"):  # 방어선 위로 회복 → 정지 해제
+                        paper_fund6.set_halted(tid, False)
+                    continue
+                if led.get("last_defense_date") == today:
+                    continue  # 하루 1번만 (재개해도 다음날 재정지)
+                paper_fund6.set_halted(tid, True, "방어선(-15%) 도달")
+                paper_fund6.mark_defense_date(tid)
+                e = paper_fund6.evaluate(tid)
+                downs = sum(1 for r in e["rows"] if r["pct"] < 0)
+                cause = f"편입 {e['holds']}종목 중 {downs}종목 하락"
+                self.send_buttons(
+                    f"🔴 {track_tag(tid)} 방어선 도달 ({ret:+.1f}%, {e['pnl_krw']:+,.0f}원) — 이 트랙만 정지\n"
+                    f"   원인: {cause}\n   나머지 트랙은 정상 작동 중.",
+                    [{"text": "▶ 재개", "callback_data": f"f6resume:{tid}"},
+                     {"text": "⏸ 이 트랙 쉬기", "callback_data": f"f6pause:{tid}"}])
+            except Exception as ex:
+                print(f"[봇] 방어선 {tid} 오류: {ex!r}")
+
+    def run_fund6_review(self) -> None:
+        """분기 점검: 각 트랙 보유 종목이 아직 3박자(강도 관문)를 통과하나 재확인."""
+        for market in ("US", "KR"):
+            try:
+                per_track = scan_market(market, self.client)
+            except Exception as e:
+                self.send(f"분기 점검({market}) 실패: {e}")
+                continue
+            for tid, cands in per_track.items():
+                led = paper_fund6.load_ledger(tid)
+                if not led["positions"]:
+                    continue
+                passing = {c["symbol"] for c in cands}
+                broken = [(s, p["name"]) for s, p in led["positions"].items() if s not in passing]
+                if not broken:
+                    self.send(f"{track_tag(tid)} 분기 점검: 보유 {len(led['positions'])}종목 근거 유지 ✅")
+                    continue
+                names = ", ".join(f"{n}({s})" for s, n in broken)
+                buttons = [{"text": f"🔴매도 {n[:10]}", "callback_data": f"f6sell:{tid}:{s}"} for s, n in broken]
+                buttons.append({"text": "❌ 전체 보유", "callback_data": f"f6ignore:{tid}"})
+                self.send_buttons(f"{track_tag(tid)} 분기 점검 ⚠️ 근거 훼손 후보: {names}\n"
+                                  f"(3박자 상위에서 탈락 — 주가 아니라 '근거'로 판단)", buttons)
+
+    def fund6_summary_text(self) -> str:
+        lines = ["📊 펀더멘털 6트랙 현황"]
+        for tid in TRACKS:
+            try:
+                e = paper_fund6.evaluate(tid)
+                st = "🔴정지" if e["halted"] else ("⏸쉬기" if e["paused"] else "🟢")
+                lines.append(f"{track_tag(tid)} {e['ret']:+.1f}% · 보유{e['holds']} · 현금{e['cash_pct']:.0f}% {st}")
+            except Exception:
+                lines.append(f"{track_tag(tid)} 조회 실패")
+        lines.append("\n'스캔' = 편입 후보 알림 · 트랙명은 알림 머리표로 표시")
+        return "\n".join(lines)
+
     # ----- 롱폴링 루프 + 시간 트리거 -----
     def run(self) -> None:
         print(f"[봇] 시작 — 인증 chat_id={self.chat_id}. Ctrl+C로 종료.")
-        self.send("🤖 봇 가동. 명령: 상태·잔고·정지. 매일 12:50 강세종목 승인 알림.")
+        self.send("🤖 봇 가동 (펀더멘털 6트랙 v1.4). 명령: 현황·스캔·트랙. 목요일 편입 후보 알림.")
         h, m = rules.APPROVAL_TIME.split(":")
-        scan_time = dtime(int(h), int(m))
-        rh, rm = rules.REVIEW_TIME.split(":")
-        review_time = dtime(int(rh), int(rm))
+        kr_time = dtime(int(h), int(m))          # 12:50 한국 스캔
         uh, um = rules.US_RECOMMEND_TIME.split(":")
-        us_time = dtime(int(uh), int(um))
-        lh, lm = rules.LONG_ALERT_TIME.split(":")
-        long_time = dtime(int(lh), int(lm))
-        et_zone = ZoneInfo("America/New_York")
-        settle_et = dtime(12, 50)  # 미국 개장 09:30 ET + 3h20m = 12:50 ET (서머타임 자동)
+        us_time = dtime(int(uh), int(um))        # 20:00 미국 스캔
+        defense_time = dtime(16, 0)              # 방어선 감시 시각(하루 1회)
+        scan_day = rules.LONG_ALERT_DAY          # 목요일 주간 스캔
         offset = None
-        last_scan_date = None
-        last_review_date = None
-        last_us_date = None
-        last_settle_date = None
-        last_long_date = None
-        last_krfund_date = None
-        last_quarter = None
-        last_risk = 0.0
+        last_kr = last_us = last_def = last_quarter = None
         while True:
             now = datetime.now()
-            # 12:50 일일 스캔 (평일 1회)
-            if (now.weekday() < 5 and now.time() >= scan_time
-                    and last_scan_date != now.date()):
-                last_scan_date = now.date()
+            # 주간 한국 6트랙 스캔 (목 12:50)
+            if now.weekday() == scan_day and now.time() >= kr_time and last_kr != now.date():
+                last_kr = now.date()
                 try:
-                    self.run_daily_scan()
+                    self.run_fund6_market("KR")
                 except Exception as e:
-                    print(f"[봇] 스캔 오류: {e!r}")
-            # 금요일 마감 후 주간 재평가 (주 1회)
-            if (now.weekday() == rules.REVIEW_DAY and now.time() >= review_time
-                    and last_review_date != now.date()):
-                last_review_date = now.date()
+                    print(f"[봇] 한국 스캔 오류: {e!r}")
+            # 주간 미국 6트랙 스캔 (목 20:00)
+            if now.weekday() == scan_day and now.time() >= us_time and last_us != now.date():
+                last_us = now.date()
                 try:
-                    self.run_weekly_review()
+                    self.run_fund6_market("US")
                 except Exception as e:
-                    print(f"[봇] 재평가 오류: {e!r}")
-            # 밤 8시 미국 페이퍼 승인 알림 (KST, 평일 1회) · 역추세는 보류(비활성)
-            if (now.weekday() < 5 and now.time() >= us_time
-                    and last_us_date != now.date()):
-                last_us_date = now.date()
+                    print(f"[봇] 미국 스캔 오류: {e!r}")
+            # 트랙별 방어선 감시 (평일 16:00, 하루 1회)
+            if now.weekday() < 5 and now.time() >= defense_time and last_def != now.date():
+                last_def = now.date()
                 try:
-                    self.run_us_paper_alert()
+                    self.run_fund6_defense()
                 except Exception as e:
-                    print(f"[봇] 미국 알림 오류: {e!r}")
-            # 미국 개장+3h20m(12:50 ET) 예약 체결 기록 (미국 거래일 1회)
-            now_et = datetime.now(et_zone)
-            if (now_et.weekday() < 5 and now_et.time() >= settle_et
-                    and last_settle_date != now_et.date()):
-                last_settle_date = now_et.date()
-                try:
-                    self.run_us_paper_settle()
-                    self.run_long_settle()   # 트랙C도 같은 시각(개장 후) 체결
-                    self.run_d_settle()      # 트랙D 역추세도 같은 시각
-                except Exception as e:
-                    print(f"[봇] 미국 체결 오류: {e!r}")
-            # 트랙C 미국 장기 편입 알림 (매주 목요일 밤 8시, 주 1회)
-            if (now.weekday() == rules.LONG_ALERT_DAY and now.time() >= long_time
-                    and last_long_date != now.date()):
-                last_long_date = now.date()
-                try:
-                    self.run_long_alert()
-                except Exception as e:
-                    print(f"[봇] 장기 알림 오류: {e!r}")
-            # 트랙D 한국 펀더멘털 편입 후보 (매주 목요일 점심 12:50, 주 1회)
-            if (now.weekday() == rules.LONG_ALERT_DAY and now.time() >= scan_time
-                    and last_krfund_date != now.date()):
-                last_krfund_date = now.date()
-                try:
-                    self.run_kr_fund_alert()
-                except Exception as e:
-                    print(f"[봇] 한국펀더 알림 오류: {e!r}")
-            # 트랙C·D 펀더멘털 분기 점검 (1·4·7·10월 초 1회)
+                    print(f"[봇] 방어선 오류: {e!r}")
+            # 분기 점검 (1·4·7·10월 초 1회)
             qkey = f"{now.year}Q{(now.month - 1) // 3 + 1}"
             if (now.month in (1, 4, 7, 10) and now.day <= 3
                     and now.time() >= dtime(9, 0) and last_quarter != qkey):
                 last_quarter = qkey
                 try:
-                    self.run_long_review()
-                    self.run_kr_fund_review()
+                    self.run_fund6_review()
                 except Exception as e:
-                    print(f"[봇] 분기 점검 오류: {e!r}")
-            # 장중 리스크 감시 (3분마다)
-            if is_market_open(now) and time.time() - last_risk > 180:
-                last_risk = time.time()
-                try:
-                    self.run_risk_check()
-                except Exception as e:
-                    print(f"[봇] 리스크 오류: {e!r}")
+                    print(f"[봇] 분기점검 오류: {e!r}")
             # 텔레그램 폴링 (명령 + 버튼 콜백)
             try:
                 resp = self._call("getUpdates", offset=offset, timeout=30)
@@ -810,6 +849,44 @@ class TradingBot:
                     reply = f"조회 중 오류: {e}"
                 self.send(reply, chat_id=chat)
 
+    def _handle_fund6_callback(self, data: str) -> None:
+        """6트랙 버튼: f6buy/f6sell/f6ignore/f6resume/f6pause : <tid> : <sym>."""
+        parts = data.split(":")
+        action = parts[0]
+        tid = parts[1] if len(parts) > 1 else ""
+        sym = parts[2] if len(parts) > 2 else ""
+        if tid not in TRACKS:
+            return
+        if action == "f6ignore":
+            self.send(f"❌ {track_tag(tid)} 이번 후보 보류.")
+            return
+        if action == "f6resume":
+            paper_fund6.resume_track(tid)
+            self.send(f"🟢 {track_tag(tid)} 재개 (정지·쉬기 해제).")
+            return
+        if action == "f6pause":
+            paper_fund6.set_paused(tid, True)
+            self.send(f"⏸ {track_tag(tid)} 쉬기로 전환 — 알림·매매 멈춤('재개'로 복귀).")
+            return
+        try:
+            price = paper_fund6.price_of(tid, sym)
+        except Exception as e:
+            self.send(f"{sym} 가격 조회 실패: {e}")
+            return
+        if action == "f6buy":
+            if TRACKS[tid]["market"] == "US":
+                from ..scanner import _us_meta
+                name = _us_meta(sym)[0]
+            else:
+                from ..scanner_kr_fund import KR_FUND_UNIVERSE
+                name = KR_FUND_UNIVERSE.get(sym, sym)
+            target_n = STRENGTH[TRACKS[tid]["strength"]]["target_n"]
+            r = paper_fund6.record_buy(tid, sym, name, price, target_n, note="3박자 편입")
+            self.send(f"{track_tag(tid)} " + r["msg"])
+        elif action == "f6sell":
+            r = paper_fund6.record_sell(tid, sym, price)
+            self.send(f"{track_tag(tid)} " + r["msg"])
+
     def _handle_callback(self, cq: dict) -> None:
         """인라인 버튼(승인/무시) 처리."""
         self._call("answerCallbackQuery", callback_query_id=cq.get("id"))
@@ -817,6 +894,10 @@ class TradingBot:
         if chat != self.chat_id:
             return
         data = cq.get("data", "")
+        # ---- 펀더멘털 6트랙 콜백 (f6buy/f6sell/f6ignore/f6resume/f6pause : tid : sym) ----
+        if data.startswith("f6"):
+            self._handle_fund6_callback(data)
+            return
         if data == "skip":
             self.send("❌ 전체 무시. 오늘은 현금 대기합니다.")
             return

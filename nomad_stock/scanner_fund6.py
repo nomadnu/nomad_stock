@@ -50,91 +50,105 @@ def _value_score_kr(per) -> float:
     return max(-15.0, min(15.0, 12 - per)) if per and per > 0 else 0.0
 
 
-def scan_us_fund(strength: str) -> list[dict]:
-    """미국 우량성장주 후보 (yfinance). 재무 관문 통과 → 성장+밸류 점수 상위."""
+def _raw_us() -> list[dict]:
+    """미국 후보 원자료(강도 관문 전 지표)를 1회 수집. 흑자 관문은 공통 적용."""
     import yfinance as yf
 
     from .scanner import _us_meta
-    p = STRENGTH[strength]
-    scored = []
+    raws = []
     for sym in FUND6_US_UNIVERSE:
         try:
             info = yf.Ticker(sym).info
         except Exception:
             continue
         roe = info.get("returnOnEquity")           # 0.15 = 15%
-        dte = info.get("debtToEquity")             # % 단위
+        if roe is None:
+            continue
         ocf = info.get("operatingCashflow") or info.get("freeCashflow")
-        # 재무 관문(필수)
-        if roe is None or roe * 100 < p["roe_min"]:
-            continue
-        if dte is not None and dte > p["debt_max"]:
-            continue
-        if ocf is not None and ocf <= 0:
-            continue
-        per = info.get("trailingPE")
-        if per and per > p["per_max"]:      # 초고평가 배제(합리적 가격)
+        if ocf is not None and ocf <= 0:           # 영업현금흐름 흑자(공통 관문)
             continue
         g = info.get("revenueGrowth"); eg = info.get("earningsGrowth")
-        raw = g if g is not None else eg          # 매출성장 우선(이익성장은 폭발값 잦음)
-        growth = min((raw or 0) * 100, GROWTH_CAP)  # 초고성장 상한
+        rawg = g if g is not None else eg          # 매출성장 우선(이익성장은 폭발값 잦음)
+        growth = min((rawg or 0) * 100, GROWTH_CAP)
         peg = info.get("trailingPegRatio") or info.get("pegRatio")
         per = info.get("trailingPE")
-        score = growth + _value_score_us(peg, per)
-        name, sector = _us_meta(sym)
-        scored.append({
+        name, _ = _us_meta(sym)
+        raws.append({
             "symbol": sym, "name": name or info.get("shortName", sym),
             "price": round(info.get("currentPrice") or info.get("regularMarketPrice") or 0, 2),
-            "growth": round(growth, 1), "roe": round(roe * 100, 1),
-            "debt": round(dte, 0) if dte is not None else None,
-            "per": round(per, 1) if per else None, "score": round(score, 1),
+            "roe": roe * 100, "debt": info.get("debtToEquity"), "per": per,
+            "growth": round(growth, 1), "score": round(growth + _value_score_us(peg, per), 1),
         })
-    scored.sort(key=lambda c: c["score"], reverse=True)
-    return scored[:p["target_n"]]
+    return raws
 
 
-def scan_kr_fund6(client: KISClient, strength: str) -> list[dict]:
-    """한국 우량성장주 후보 (KIS 재무비율). 재무 관문 통과 → 성장+밸류 점수 상위."""
-    p = STRENGTH[strength]
-    scored = []
+def _raw_kr(client: KISClient) -> list[dict]:
+    """한국 후보 원자료(KIS 재무비율). ROE>0을 흑자 프록시(현금흐름 미제공)."""
+    raws = []
     for code, name in KR_FUND_UNIVERSE.items():
         fr = client.financial_ratio(code)
         if not fr:
             continue
-        roe = fr.get("roe"); debt = fr.get("debt_ratio")
-        # 재무 관문(필수). ROE>0을 흑자 프록시로 사용(KIS 재무비율에 현금흐름 없음).
-        if roe is None or roe < p["roe_min"]:
-            continue
-        if debt is not None and debt > p["debt_max"]:
+        roe = fr.get("roe")
+        if roe is None or roe <= 0:
             continue
         try:
             q = client.get_quote(code)
             per, price = q.get("per", 0.0), q.get("price", 0)
         except Exception:
             per, price = None, 0
-        if per and per > p["per_max"]:            # 초고평가 배제(합리적 가격)
-            continue
-        raw = fr.get("rev_growth")
-        if raw is None:
-            raw = fr.get("op_growth")
-        growth = min((raw or 0), GROWTH_CAP)      # 매출성장 우선 + 초고성장 상한
-        score = growth + _value_score_kr(per)
-        scored.append({
+        rawg = fr.get("rev_growth")
+        if rawg is None:
+            rawg = fr.get("op_growth")
+        growth = min((rawg or 0), GROWTH_CAP)
+        raws.append({
             "symbol": code, "name": name, "price": price,
-            "growth": round(growth, 1), "roe": round(roe, 1),
-            "debt": round(debt, 0) if debt is not None else None,
-            "per": round(per, 1) if per else None, "score": round(score, 1),
+            "roe": roe, "debt": fr.get("debt_ratio"), "per": per,
+            "growth": round(growth, 1), "score": round(growth + _value_score_kr(per), 1),
         })
-    scored.sort(key=lambda c: c["score"], reverse=True)
-    return scored[:p["target_n"]]
+    return raws
+
+
+def _apply_strength(raws: list[dict], strength: str) -> list[dict]:
+    """강도 관문(ROE·부채·PER 상한)으로 거른 뒤 점수 상위 target_n."""
+    p = STRENGTH[strength]
+    sel = []
+    for c in raws:
+        if c["roe"] < p["roe_min"]:
+            continue
+        if c["debt"] is not None and c["debt"] > p["debt_max"]:
+            continue
+        if c["per"] and c["per"] > p["per_max"]:
+            continue
+        d = dict(c)
+        d["roe"] = round(c["roe"], 1)
+        d["debt"] = round(c["debt"], 0) if c["debt"] is not None else None
+        d["per"] = round(c["per"], 1) if c["per"] else None
+        sel.append(d)
+    sel.sort(key=lambda c: c["score"], reverse=True)
+    return sel[:p["target_n"]]
+
+
+def scan_us_fund(strength: str) -> list[dict]:
+    return _apply_strength(_raw_us(), strength)
+
+
+def scan_kr_fund6(client: KISClient, strength: str) -> list[dict]:
+    return _apply_strength(_raw_kr(client), strength)
 
 
 def scan_track(tid: str, client: KISClient | None = None) -> list[dict]:
     """트랙 id로 스캔 디스패치."""
-    strength = TRACKS[tid]["strength"]
     if is_us(tid):
-        return scan_us_fund(strength)
-    return scan_kr_fund6(client or KISClient(), strength)
+        return scan_us_fund(TRACKS[tid]["strength"])
+    return scan_kr_fund6(client or KISClient(), TRACKS[tid]["strength"])
+
+
+def scan_market(market: str, client: KISClient | None = None) -> dict:
+    """시장(US/KR)의 3강도 후보를 데이터 1회 조회로 반환 → {tid: [cands]}."""
+    raws = _raw_us() if market == "US" else _raw_kr(client or KISClient())
+    return {tid: _apply_strength(raws, v["strength"])
+            for tid, v in TRACKS.items() if v["market"] == market}
 
 
 def format_candidates(tid: str, cands: list[dict], affordable: set | None = None) -> str:

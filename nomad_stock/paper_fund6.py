@@ -154,6 +154,13 @@ def set_paused(tid: str, paused: bool) -> None:
     save_ledger(tid, led)
 
 
+def resume_track(tid: str) -> None:
+    """재개: 정지·쉬기 모두 해제(사람이 확인 후 수동 재개)."""
+    led = load_ledger(tid)
+    led["halted"], led["halt_reason"], led["paused"] = False, "", False
+    save_ledger(tid, led)
+
+
 def mark_defense_date(tid: str) -> None:
     led = load_ledger(tid)
     led["last_defense_date"] = datetime.now().strftime("%Y-%m-%d")
