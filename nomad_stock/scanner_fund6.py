@@ -1,0 +1,129 @@
+"""펀더멘털 6트랙 스캐너 — 3박자(재무 관문 + 성장·밸류 점수화), 필터강도 3단계.
+
+- 재무건전성 = 필수 관문(ROE·부채·흑자). 통과 못 하면 탈락.
+- 성장성·밸류에이션 = 점수화(합산 상위 target_n 편입).
+- 강도차: 엄선(관문 엄격·소수) / 중간 / 폭넓게(관문 느슨·다수).
+- 미국=yfinance, 한국=KIS 재무비율. 임계값은 예시안(페이퍼로 조정).
+"""
+from __future__ import annotations
+
+from .broker import KISClient
+from .scanner_kr_fund import KR_FUND_UNIVERSE
+from .scanner_long import LONG_UNIVERSE
+from .tracks import TRACKS, is_us
+
+# 강도별 파라미터(예시안) — 재무 관문 엄격도 + 편입 종목 수
+STRENGTH = {
+    "strict": {"target_n": 3, "roe_min": 15.0, "debt_max": 100.0},
+    "mid":    {"target_n": 5, "roe_min": 10.0, "debt_max": 150.0},
+    "loose":  {"target_n": 8, "roe_min": 8.0,  "debt_max": 200.0},
+}
+
+
+def _value_score_us(peg, per) -> float:
+    if peg and peg > 0:
+        return max(0.0, (2.5 - peg)) * 10  # PEG 낮을수록 가점
+    if per and per > 0:
+        return max(0.0, (30 - per))
+    return 0.0
+
+
+def _value_score_kr(per) -> float:
+    return max(0.0, (15 - per)) if per and per > 0 else 0.0
+
+
+def scan_us_fund(strength: str) -> list[dict]:
+    """미국 우량성장주 후보 (yfinance). 재무 관문 통과 → 성장+밸류 점수 상위."""
+    import yfinance as yf
+
+    from .scanner import _us_meta
+    p = STRENGTH[strength]
+    scored = []
+    for sym in LONG_UNIVERSE:
+        try:
+            info = yf.Ticker(sym).info
+        except Exception:
+            continue
+        roe = info.get("returnOnEquity")           # 0.15 = 15%
+        dte = info.get("debtToEquity")             # % 단위
+        ocf = info.get("operatingCashflow") or info.get("freeCashflow")
+        # 재무 관문(필수)
+        if roe is None or roe * 100 < p["roe_min"]:
+            continue
+        if dte is not None and dte > p["debt_max"]:
+            continue
+        if ocf is not None and ocf <= 0:
+            continue
+        g = info.get("revenueGrowth"); eg = info.get("earningsGrowth")
+        growth = max((g or 0), (eg or 0)) * 100
+        peg = info.get("trailingPegRatio") or info.get("pegRatio")
+        per = info.get("trailingPE")
+        score = growth + _value_score_us(peg, per)
+        name, sector = _us_meta(sym)
+        scored.append({
+            "symbol": sym, "name": name or info.get("shortName", sym),
+            "price": round(info.get("currentPrice") or info.get("regularMarketPrice") or 0, 2),
+            "growth": round(growth, 1), "roe": round(roe * 100, 1),
+            "debt": round(dte, 0) if dte is not None else None,
+            "per": round(per, 1) if per else None, "score": round(score, 1),
+        })
+    scored.sort(key=lambda c: c["score"], reverse=True)
+    return scored[:p["target_n"]]
+
+
+def scan_kr_fund6(client: KISClient, strength: str) -> list[dict]:
+    """한국 우량성장주 후보 (KIS 재무비율). 재무 관문 통과 → 성장+밸류 점수 상위."""
+    p = STRENGTH[strength]
+    scored = []
+    for code, name in KR_FUND_UNIVERSE.items():
+        fr = client.financial_ratio(code)
+        if not fr:
+            continue
+        roe = fr.get("roe"); debt = fr.get("debt_ratio")
+        # 재무 관문(필수). ROE>0을 흑자 프록시로 사용(KIS 재무비율에 현금흐름 없음).
+        if roe is None or roe < p["roe_min"]:
+            continue
+        if debt is not None and debt > p["debt_max"]:
+            continue
+        try:
+            q = client.get_quote(code)
+            per, price = q.get("per", 0.0), q.get("price", 0)
+        except Exception:
+            per, price = None, 0
+        growth = max((fr.get("rev_growth") or 0), (fr.get("op_growth") or 0))
+        score = growth + _value_score_kr(per)
+        scored.append({
+            "symbol": code, "name": name, "price": price,
+            "growth": round(growth, 1), "roe": round(roe, 1),
+            "debt": round(debt, 0) if debt is not None else None,
+            "per": round(per, 1) if per else None, "score": round(score, 1),
+        })
+    scored.sort(key=lambda c: c["score"], reverse=True)
+    return scored[:p["target_n"]]
+
+
+def scan_track(tid: str, client: KISClient | None = None) -> list[dict]:
+    """트랙 id로 스캔 디스패치."""
+    strength = TRACKS[tid]["strength"]
+    if is_us(tid):
+        return scan_us_fund(strength)
+    return scan_kr_fund6(client or KISClient(), strength)
+
+
+def format_candidates(tid: str, cands: list[dict], affordable: set | None = None) -> str:
+    """트랙명 머리표 + 후보 표시. affordable=1주 살 수 있는 심볼(없으면 표시 안 함)."""
+    from .tracks import STRENGTH_KO, tag
+    if not cands:
+        return f"{tag(tid)} 3박자 통과 종목 없음 — 억지 편입 안 함(현금 대기)."
+    us = is_us(tid)
+    unit = "$" if us else "원"
+    lines = [f"{tag(tid)} 편입 후보 {len(cands)}종목 (재무통과·점수순)"]
+    for i, c in enumerate(cands, 1):
+        per = f"PER {c['per']}" if c["per"] else "PER-"
+        debt = f"부채 {c['debt']:.0f}%" if c["debt"] is not None else "부채-"
+        aff = "" if affordable is None or c["symbol"] in affordable else " ⚠️현금부족(제외)"
+        lines.append(
+            f"\n{i}. {c['name']} ({c['symbol']}) {c['price']:,}{unit}{aff}\n"
+            f"   성장 {c['growth']}% · ROE {c['roe']}% · {debt} · {per} · 점수 {c['score']}"
+        )
+    return "\n".join(lines)
