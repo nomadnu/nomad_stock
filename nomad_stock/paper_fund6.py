@@ -207,6 +207,7 @@ def evaluate(tid: str) -> dict:
         "track_id": tid, "market": led["market"], "capital_krw": cap,
         "total_krw": total_krw, "pnl_krw": total_krw - cap, "ret": ret,
         "cash_pct": (cash_krw / total_krw * 100) if total_krw else 0,
+        "cash_krw": cash_krw,
         "holds": len(rows), "rows": rows,
         "bench_ret": bench_ret, "excess": ret - bench_ret,
         "halted": led.get("halted", False), "halt_reason": led.get("halt_reason", ""),

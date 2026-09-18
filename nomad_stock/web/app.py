@@ -169,6 +169,7 @@ def create_app(enable_scheduler: bool = False) -> Flask:
                 t["ret"] = round(e["ret"], 2)
                 t["holds"] = e["holds"]
                 t["cash_pct"] = round(e["cash_pct"], 1)
+                t["cash"] = round(e["cash_krw"])
                 t["bench"] = round(e["bench_ret"], 2)
                 t["edge"] = round(e["excess"], 2)
                 t["halted"] = e["halted"]
@@ -184,12 +185,14 @@ def create_app(enable_scheduler: bool = False) -> Flask:
 
         total_cap = sum(t.get("cap", 10_000_000) for t in tracks)
         total_eval = sum(t.get("eval", t.get("cap", 10_000_000)) for t in tracks)
+        total_cash = sum(t.get("cash", 0) for t in tracks)
         total_ret = round((total_eval / total_cap - 1) * 100, 2) if total_cap else 0
         # 총 시장평균: 신뢰 가능한 미국(S&P500)만
         us_bench = [t["bench"] for t in tracks if t["market"] == "US" and "bench" in t]
         total_bench = round(sum(us_bench) / len(us_bench), 2) if us_bench else None
         return {"tracks": tracks, "holdings": holds, "total_cap": total_cap,
                 "total_eval": total_eval, "total_pnl": total_eval - total_cap,
+                "total_cash": total_cash,
                 "total_ret": total_ret, "total_bench": total_bench}
 
     @app.route("/api/all")
@@ -398,8 +401,8 @@ header{display:flex;justify-content:space-between;align-items:flex-end;padding-b
 button{background:var(--panel-2);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:7px 13px;cursor:pointer;font-size:13px}
 button:active{transform:scale(.97)} button.on{background:rgba(63,185,80,.16);border-color:var(--up);color:var(--up)}
 .tmsg{font-size:12px;color:var(--ink-dim)}
-.total{display:flex;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;margin-bottom:20px}
-.total>div{flex:1;padding:13px 15px;border-right:1px solid var(--line)} .total>div:last-child{border-right:0}
+.total{display:flex;flex-wrap:wrap;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;margin-bottom:20px}
+.total>div{flex:1 1 130px;padding:13px 15px;border-right:1px solid var(--line);border-bottom:1px solid var(--line)} .total>div:last-child{border-right:0}
 .total .k{font-size:11px;color:var(--ink-dim);margin-bottom:5px} .total .v{font-size:18px;font-weight:700} .total .v.sub{font-size:14px}
 .total .v .mkt{font-size:12px;color:var(--ink-dim);font-weight:600}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:11px} @media(max-width:600px){.grid{grid-template-columns:1fr}}
@@ -452,21 +455,27 @@ footer{margin-top:16px;font-size:11px;color:var(--ink-faint);text-align:center;l
 <div class="total">
   <div><div class="k">총 투입원금</div><div class="v num" id="tcap">-</div></div>
   <div><div class="k">총 평가액</div><div class="v num" id="teval">-</div></div>
+  <div><div class="k">총 현금(잔액)</div><div class="v num" id="tcash">-</div></div>
   <div><div class="k">총 손익 (vs 시장)</div><div class="v sub num" id="tpnl">-</div></div>
 </div>
 <div class="grid" id="cards"></div>
 <div class="compare"><h2>트랙별 수익률 비교 <span style="font-weight:500;color:var(--ink-faint)">— 괄호는 시작 후 시장</span></h2><div id="bars"></div></div>
-<div class="holds"><h2>보유 종목 (전 트랙)</h2>
-  <table><thead><tr><th>종목</th><th>트랙</th><th>매수가</th><th>현재가</th><th>수익률</th><th></th></tr></thead>
-  <tbody id="holdrows"></tbody></table></div>
 <div class="note">📌 6트랙 모두 페이퍼(모의). 변수는 <b>필터 강도(엄선·균형·폭넓게)</b> 하나. 손절 없음(장기), 트랙별 방어선 −15%. 한국 벤치마크(코스피200)는 무료 데이터라 참고용 ⚠. <b>스캔·편입·재개 모두 이 화면에서</b> — 알림은 🔔로 켜면 폰으로 옵니다.</div>
 <div style="margin:16px 0"><a href="/logout" style="color:#8b98a5;font-size:12px">로그아웃</a></div>
 <footer>기존 추종·구펀더·역추세 트랙은 아카이브(비활성)로 보존</footer>
 <script>
 const won=n=>Math.round(n).toLocaleString('ko-KR');
 const sg=v=>(v>=0?'+':'')+Number(v).toFixed(1);
-let PENDING={};
+let PENDING={},HOLDINGS=[];
 function toast(m){document.getElementById('toolmsg').textContent=m;}
+function holdsHtml(t){
+  const hs=HOLDINGS.filter(h=>h.track===t.id);
+  if(!hs.length)return '<div class="cand"><div class="cand-h">📦 보유 없음 (현금 대기)</div></div>';
+  let h='<div class="cand"><div class="cand-h">📦 보유 '+hs.length+'종목</div>';
+  hs.forEach(x=>{h+=`<div class="cand-row"><span class="nm">${x.name} <span style="color:var(--ink-faint)">${x.buy}→${x.cur}</span></span>`
+    +`<span><span class="num ${x.pct>=0?'up':'down'}" style="margin-right:6px">${sg(x.pct)}%</span><button class="mini" onclick="sell('${t.id}','${x.symbol}')">매도</button></span></div>`;});
+  return h+'</div>';
+}
 function u8(base64){const p='='.repeat((4-base64.length%4)%4);const b=(base64+p).replace(/-/g,'+').replace(/_/g,'/');const r=atob(b);return Uint8Array.from([...r].map(c=>c.charCodeAt(0)));}
 async function enablePush(){
   try{
@@ -515,6 +524,8 @@ async function load(){
   document.getElementById('asof').textContent=new Date().toLocaleString('ko-KR',{hour12:false}).slice(5);
   document.getElementById('tcap').textContent=won(d.total_cap)+'원';
   document.getElementById('teval').textContent=won(d.total_eval)+'원';
+  document.getElementById('tcash').textContent=won(d.total_cash||0)+'원';
+  HOLDINGS=d.holdings||[];
   const tp=document.getElementById('tpnl');
   const mkt=(d.total_bench!=null)?` <span class="mkt">(시장 ${sg(d.total_bench)}%)</span>`:'';
   tp.innerHTML=sg(d.total_ret)+'%'+mkt;tp.className='v sub num '+(d.total_ret>=0?'up':'down');
@@ -525,7 +536,7 @@ async function load(){
       inner=`<div class="ret"><span class="num ${rcls}">${sg(t.ret)}%</span>${mktHtml(t)}</div>${edgeHtml(t)}
         <div class="evalline">평가 <span class="num">${won(t.eval)}원</span> · 원금 <span class="num">${won(t.cap)}원</span></div>
         <div class="meta"><div>보유<b class="num">${t.holds}종목</b></div><div>현금<b class="num">${Math.round(t.cash_pct)}%</b></div></div>
-        ${candHtml(t)}${actsHtml(t)}`;}
+        ${holdsHtml(t)}${candHtml(t)}${actsHtml(t)}`;}
     cw.innerHTML+=`<div class="card"><div class="spine" style="background:${col}"></div><div class="cbody">
       <div class="chead"><div><div class="label">${t.flag} ${t.label}</div><div class="method">${t.market==='US'?'미국·S&P500':'한국·코스피200'} · 3박자</div></div>${stateBadge(t)}</div>${inner}</div></div>`;});
   const valid=d.tracks.filter(t=>!t.error),mx=Math.max(5,...valid.map(t=>Math.abs(t.ret)));
@@ -537,12 +548,6 @@ async function load(){
     bw.innerHTML+=`<div class="bar-row"><div class="bar-label"><span class="chip" style="background:${col}"></span>${t.flag} ${t.label}${sub}</div>
       <div class="bar-track"><div class="bar-zero"></div><div class="bar-fill" style="left:${left}%;width:${w}%;background:${col}"></div></div>
       <div class="bar-val ${t.ret>=0?'up':'down'}">${sg(t.ret)}%</div></div>`;});
-  const hr=document.getElementById('holdrows');hr.innerHTML='';
-  if(!d.holdings.length){hr.innerHTML='<tr><td colspan="6" style="text-align:center;color:var(--ink-faint);padding:16px">보유 종목 없음 (편입 전)</td></tr>';}
-  d.holdings.forEach(h=>{hr.innerHTML+=`<tr><td><span class="chip" style="background:${h.color}"></span>${h.name}</td>
-    <td>${h.flag}</td><td class="num">${h.buy}</td><td class="num">${h.cur}</td>
-    <td class="num ${h.pct>=0?'up':'down'}">${sg(h.pct)}%</td>
-    <td><button class="mini" onclick="sell('${h.track}','${h.symbol}')">매도</button></td></tr>`;});
 }
 load();setInterval(load,30000);
 </script>
