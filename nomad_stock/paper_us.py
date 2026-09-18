@@ -42,15 +42,19 @@ def cached(key: str, fn):
     return val
 
 
+def _last_close(ticker: str) -> float:
+    """마지막 '유효'(NaN 아님) 종가. 최근 행이 비어있어도 안전."""
+    return float(fdr.DataReader(ticker, "2026-01-01")["Close"].dropna().iloc[-1])
+
+
 def us_price(symbol: str) -> float:
-    """미국 종목 현재가(달러). 최근 종가, 90초 캐시."""
-    return cached("us:" + symbol,
-                  lambda: round(float(fdr.DataReader(symbol, "2026-01-01")["Close"].iloc[-1]), 2))
+    """미국 종목 현재가(달러). 마지막 유효 종가, 90초 캐시."""
+    return cached("us:" + symbol, lambda: round(_last_close(symbol), 2))
 
 
 def fx_rate() -> float:
     """USD/KRW 환율. 90초 캐시."""
-    return cached("fx", lambda: round(float(fdr.DataReader("USD/KRW", "2026-01-01")["Close"].iloc[-1]), 2))
+    return cached("fx", lambda: round(_last_close("USD/KRW"), 2))
 
 
 def index_return(ticker: str, start: str):

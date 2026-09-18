@@ -178,6 +178,8 @@ def evaluate(tid: str) -> dict:
             cur = us_price(sym) if us else kr_price(sym)
         except Exception:
             cur = pos["avg"]
+        if cur != cur or cur is None:   # NaN 방어(JSON 깨짐·화면 죽음 방지)
+            cur = pos["avg"]
         hv += cur * pos["qty"]
         unit = "$" if us else ""
         suf = "" if us else "원"

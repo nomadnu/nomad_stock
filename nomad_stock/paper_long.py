@@ -50,8 +50,8 @@ def pop_reservations() -> list:
 
 def spx_level() -> float:
     """S&P500 지수 현재 레벨 (벤치마크). 90초 캐시."""
-    from .paper_us import cached
-    return cached("spx", lambda: round(float(fdr.DataReader("US500", "2026-01-01")["Close"].iloc[-1]), 2))
+    from .paper_us import _last_close, cached
+    return cached("spx", lambda: round(_last_close("US500"), 2))
 
 
 def load_ledger() -> dict:
