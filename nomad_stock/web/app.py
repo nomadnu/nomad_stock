@@ -151,10 +151,15 @@ def create_app(enable_scheduler: bool = False) -> Flask:
         except Exception as ex:
             return jsonify({"error": str(ex)}), 200
 
+    _all_cache = {"data": None, "ts": 0.0}
+
     @app.route("/api/all")
     @login_required
     def api_all():
-        # 펀더멘털 6트랙 (v1.4). 기존 트랙은 아카이브(대시보드 제외).
+        # 펀더멘털 6트랙 (v1.4). 20초 캐시 — 반복 조회로 서버가 밀리지 않게.
+        import time as _t
+        if _all_cache["data"] is not None and _t.time() - _all_cache["ts"] < 20:
+            return jsonify(_all_cache["data"])
         from .. import paper_fund6
         from ..tracks import TRACKS
         tracks, holds = [], []
@@ -189,9 +194,12 @@ def create_app(enable_scheduler: bool = False) -> Flask:
         # 총 시장평균: 신뢰 가능한 미국(S&P500)만
         us_bench = [t["bench"] for t in tracks if t["market"] == "US" and "bench" in t]
         total_bench = round(sum(us_bench) / len(us_bench), 2) if us_bench else None
-        return jsonify({"tracks": tracks, "holdings": holds, "total_cap": total_cap,
-                        "total_eval": total_eval, "total_pnl": total_eval - total_cap,
-                        "total_ret": total_ret, "total_bench": total_bench})
+        payload = {"tracks": tracks, "holdings": holds, "total_cap": total_cap,
+                   "total_eval": total_eval, "total_pnl": total_eval - total_cap,
+                   "total_ret": total_ret, "total_bench": total_bench}
+        _all_cache["data"] = payload
+        _all_cache["ts"] = _t.time()
+        return jsonify(payload)
 
     # ===== 웹앱 통합: 웹 푸시 + 실행 액션 (텔레그램 대체) =====
     @app.route("/sw.js")
@@ -258,14 +266,18 @@ def create_app(enable_scheduler: bool = False) -> Flask:
     def api_buy():
         from . import actions
         d = request.get_json(force=True)
-        return jsonify(actions.buy(d.get("tid"), d.get("symbol")))
+        r = actions.buy(d.get("tid"), d.get("symbol"))
+        _all_cache["ts"] = 0.0
+        return jsonify(r)
 
     @app.route("/api/sell", methods=["POST"])
     @login_required
     def api_sell():
         from . import actions
         d = request.get_json(force=True)
-        return jsonify(actions.sell(d.get("tid"), d.get("symbol")))
+        r = actions.sell(d.get("tid"), d.get("symbol"))
+        _all_cache["ts"] = 0.0
+        return jsonify(r)
 
     @app.route("/api/track-action", methods=["POST"])
     @login_required
@@ -273,6 +285,7 @@ def create_app(enable_scheduler: bool = False) -> Flask:
         from . import actions
         d = request.get_json(force=True)
         act, tid = d.get("action"), d.get("tid")
+        _all_cache["ts"] = 0.0
         if act == "resume":
             return jsonify(actions.resume(tid))
         if act == "pause":

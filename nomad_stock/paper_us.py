@@ -24,17 +24,33 @@ _LEDGER_PATH = os.path.join(_STATE_DIR, "paper_us.json")
 _RESV_PATH = os.path.join(_STATE_DIR, "us_reservations.json")
 
 
-# ----- 시세·환율 -----
+# ----- 시세·환율 (짧은 TTL 캐시: 대시보드가 반복 조회해도 서버가 안 밀리게) -----
+import time as _time
+
+_PRICE_CACHE: dict = {}
+_PRICE_TTL = 90  # 초. 페이퍼·장기라 90초 지연 무방.
+
+
+def cached(key: str, fn):
+    """key로 fn() 결과를 _PRICE_TTL초 캐시. FDR 반복 호출 폭주 방지."""
+    now = _time.time()
+    hit = _PRICE_CACHE.get(key)
+    if hit and now - hit[1] < _PRICE_TTL:
+        return hit[0]
+    val = fn()
+    _PRICE_CACHE[key] = (val, now)
+    return val
+
+
 def us_price(symbol: str) -> float:
-    """미국 종목 현재가(달러). 장중이면 당일 실시간, 아니면 최근 종가."""
-    df = fdr.DataReader(symbol, "2026-01-01")
-    return round(float(df["Close"].iloc[-1]), 2)
+    """미국 종목 현재가(달러). 최근 종가, 90초 캐시."""
+    return cached("us:" + symbol,
+                  lambda: round(float(fdr.DataReader(symbol, "2026-01-01")["Close"].iloc[-1]), 2))
 
 
 def fx_rate() -> float:
-    """USD/KRW 환율."""
-    df = fdr.DataReader("USD/KRW", "2026-01-01")
-    return round(float(df["Close"].iloc[-1]), 2)
+    """USD/KRW 환율. 90초 캐시."""
+    return cached("fx", lambda: round(float(fdr.DataReader("USD/KRW", "2026-01-01")["Close"].iloc[-1]), 2))
 
 
 def index_return(ticker: str, start: str):

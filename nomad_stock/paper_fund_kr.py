@@ -20,15 +20,15 @@ MAX_POSITIONS = 5
 
 
 def kr_price(code: str) -> float:
-    """한국 종목 현재가(원). FDR 최근 종가."""
-    df = fdr.DataReader(code, "2026-01-01")
-    return round(float(df["Close"].iloc[-1]))
+    """한국 종목 현재가(원). FDR 최근 종가, 90초 캐시."""
+    from .paper_us import cached
+    return cached("kr:" + code, lambda: round(float(fdr.DataReader(code, "2026-01-01")["Close"].iloc[-1])))
 
 
 def kospi200_level() -> float:
-    """코스피200 지수 레벨 (벤치마크). ⚠️ 무료 데이터 불안정 — 참고용."""
-    df = fdr.DataReader("KS200", "2026-01-01")
-    return round(float(df["Close"].iloc[-1]), 2)
+    """코스피200 지수 레벨 (벤치마크). ⚠️ 무료 데이터 불안정 — 참고용. 90초 캐시."""
+    from .paper_us import cached
+    return cached("ks200", lambda: round(float(fdr.DataReader("KS200", "2026-01-01")["Close"].iloc[-1]), 2))
 
 
 def load_ledger() -> dict:
