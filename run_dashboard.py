@@ -33,8 +33,9 @@ def main() -> None:
         print("⚠️  외부 바인딩인데 DASHBOARD_PASSWORD가 없습니다 — 누구나 계좌를 봅니다!")
         print("    .env에 DASHBOARD_PASSWORD를 설정하거나 localhost로만 쓰세요.")
 
-    app = create_app()
-    print(f"대시보드: http://127.0.0.1:{port}  로그인:{'켜짐' if has_pw else '꺼짐'}  (Ctrl+C 종료)")
+    app = create_app(enable_scheduler=external)
+    print(f"대시보드: http://127.0.0.1:{port}  로그인:{'켜짐' if has_pw else '꺼짐'}"
+          f"  스케줄러:{'켜짐' if external else '꺼짐'}  (Ctrl+C 종료)")
     if external:
         print(f"외부 접속: http://<서버IP>:{port}")
 

@@ -6,5 +6,6 @@ requests
 python-dotenv
 flask
 waitress
+pywebpush
 tzdata
 yfinance
