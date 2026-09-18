@@ -234,22 +234,11 @@ def create_app(enable_scheduler: bool = False) -> Flask:
     @app.route("/api/scan", methods=["POST"])
     @login_required
     def api_scan():
-        # 스캔은 1~2분 소요 → 백그라운드 실행, 즉시 응답. UI는 /api/pending 폴링.
-        import threading
-
-        from . import actions
+        # 스캔은 무거우므로 '별도 프로세스'로 실행(웹 응답이 안 밀리게). UI는 /api/pending 폴링.
+        import subprocess
+        import sys
         market = request.args.get("market", "BOTH")
-
-        def job():
-            try:
-                if market in ("KR", "BOTH"):
-                    actions.run_scan("KR", client)
-                if market in ("US", "BOTH"):
-                    actions.run_scan("US", client)
-            except Exception as e:
-                print(f"[scan] 오류: {e!r}")
-
-        threading.Thread(target=job, daemon=True).start()
+        subprocess.Popen([sys.executable, "-m", "nomad_stock.web.scan_job", market], cwd=_ROOT)
         return jsonify({"ok": True, "started": True, "market": market})
 
     @app.route("/api/lowwatch", methods=["POST"])

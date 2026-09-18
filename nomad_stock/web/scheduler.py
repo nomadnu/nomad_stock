@@ -7,6 +7,9 @@
 """
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import threading
 import time
 from datetime import datetime, time as dtime
@@ -14,6 +17,13 @@ from datetime import datetime, time as dtime
 from .. import rules
 from ..broker import KISClient
 from . import actions
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _scan_subproc(market: str) -> None:
+    """스캔은 별도 프로세스로 (웹/스케줄러 프로세스가 안 밀리게)."""
+    subprocess.Popen([sys.executable, "-m", "nomad_stock.web.scan_job", market], cwd=_ROOT)
 
 _started = False
 _lock = threading.Lock()
