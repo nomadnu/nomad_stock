@@ -153,13 +153,7 @@ def create_app(enable_scheduler: bool = False) -> Flask:
 
     _all_cache = {"data": None, "ts": 0.0}
 
-    @app.route("/api/all")
-    @login_required
-    def api_all():
-        # 펀더멘털 6트랙 (v1.4). 20초 캐시 — 반복 조회로 서버가 밀리지 않게.
-        import time as _t
-        if _all_cache["data"] is not None and _t.time() - _all_cache["ts"] < 20:
-            return jsonify(_all_cache["data"])
+    def _compute_all():
         from .. import paper_fund6
         from ..tracks import TRACKS
         tracks, holds = [], []
@@ -194,12 +188,29 @@ def create_app(enable_scheduler: bool = False) -> Flask:
         # 총 시장평균: 신뢰 가능한 미국(S&P500)만
         us_bench = [t["bench"] for t in tracks if t["market"] == "US" and "bench" in t]
         total_bench = round(sum(us_bench) / len(us_bench), 2) if us_bench else None
-        payload = {"tracks": tracks, "holdings": holds, "total_cap": total_cap,
-                   "total_eval": total_eval, "total_pnl": total_eval - total_cap,
-                   "total_ret": total_ret, "total_bench": total_bench}
-        _all_cache["data"] = payload
-        _all_cache["ts"] = _t.time()
-        return jsonify(payload)
+        return {"tracks": tracks, "holdings": holds, "total_cap": total_cap,
+                "total_eval": total_eval, "total_pnl": total_eval - total_cap,
+                "total_ret": total_ret, "total_bench": total_bench}
+
+    @app.route("/api/all")
+    @login_required
+    def api_all():
+        # 백그라운드로 미리 계산된 결과를 즉시 반환(느린 콜드 조회를 화면에 안 물림).
+        if _all_cache["data"] is not None:
+            return jsonify(_all_cache["data"])
+        try:
+            import time as _t
+            _all_cache["data"] = _compute_all()
+            _all_cache["ts"] = _t.time()
+            return jsonify(_all_cache["data"])
+        except Exception as e:
+            return jsonify({"loading": True, "msg": str(e)[:80]})
+
+    def _refresh_all():
+        try:
+            _all_cache["data"] = _compute_all()
+        except Exception as e:
+            print(f"[all-refresh] 오류: {e!r}")
 
     # ===== 웹앱 통합: 웹 푸시 + 실행 액션 (텔레그램 대체) =====
     @app.route("/sw.js")
@@ -256,7 +267,7 @@ def create_app(enable_scheduler: bool = False) -> Flask:
         from . import actions
         d = request.get_json(force=True)
         r = actions.buy(d.get("tid"), d.get("symbol"))
-        _all_cache["ts"] = 0.0
+        _refresh_all()
         return jsonify(r)
 
     @app.route("/api/sell", methods=["POST"])
@@ -265,7 +276,7 @@ def create_app(enable_scheduler: bool = False) -> Flask:
         from . import actions
         d = request.get_json(force=True)
         r = actions.sell(d.get("tid"), d.get("symbol"))
-        _all_cache["ts"] = 0.0
+        _refresh_all()
         return jsonify(r)
 
     @app.route("/api/track-action", methods=["POST"])
@@ -274,14 +285,16 @@ def create_app(enable_scheduler: bool = False) -> Flask:
         from . import actions
         d = request.get_json(force=True)
         act, tid = d.get("action"), d.get("tid")
-        _all_cache["ts"] = 0.0
         if act == "resume":
-            return jsonify(actions.resume(tid))
-        if act == "pause":
-            return jsonify(actions.pause(tid))
-        if act == "drop":
-            return jsonify(actions.drop(tid, d.get("symbol")))
-        return jsonify({"ok": False, "msg": "알 수 없는 동작"})
+            r = actions.resume(tid)
+        elif act == "pause":
+            r = actions.pause(tid)
+        elif act == "drop":
+            r = actions.drop(tid, d.get("symbol"))
+        else:
+            return jsonify({"ok": False, "msg": "알 수 없는 동작"})
+        _refresh_all()
+        return jsonify(r)
 
     @app.route("/manifest.json")
     def manifest():
@@ -302,6 +315,15 @@ def create_app(enable_scheduler: bool = False) -> Flask:
         )
 
     if enable_scheduler:
+        import threading
+        import time as _t
+
+        def _refresher():
+            while True:
+                _refresh_all()   # /api/all 결과를 60초마다 미리 계산해 즉시 응답 가능하게
+                _t.sleep(60)
+
+        threading.Thread(target=_refresher, daemon=True, name="all-refresher").start()
         from . import scheduler
         scheduler.start()
     return app
@@ -488,6 +510,7 @@ function actsHtml(t){
 }
 async function load(){
   let d;try{d=await (await fetch('/api/all')).json();}catch(e){document.getElementById('asof').textContent='조회실패';return;}
+  if(d&&d.loading){document.getElementById('asof').textContent='불러오는 중…';setTimeout(load,4000);return;}
   try{PENDING=await (await fetch('/api/pending')).json();}catch(e){}
   document.getElementById('asof').textContent=new Date().toLocaleString('ko-KR',{hour12:false}).slice(5);
   document.getElementById('tcap').textContent=won(d.total_cap)+'원';
