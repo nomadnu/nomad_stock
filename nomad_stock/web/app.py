@@ -535,7 +535,7 @@ async function load(){
     else{const rcls=t.ret>=0?'up':'down';
       inner=`<div class="ret"><span class="num ${rcls}">${sg(t.ret)}%</span>${mktHtml(t)}</div>${edgeHtml(t)}
         <div class="evalline">평가 <span class="num">${won(t.eval)}원</span> · 원금 <span class="num">${won(t.cap)}원</span></div>
-        <div class="meta"><div>보유<b class="num">${t.holds}종목</b></div><div>현금<b class="num">${Math.round(t.cash_pct)}%</b></div></div>
+        <div class="meta"><div>보유<b class="num">${t.holds}종목</b></div><div>현금<b class="num">${Math.round(t.cash_pct)}%</b></div><div>잔액<b class="num">${won(t.cash||0)}원</b></div></div>
         ${holdsHtml(t)}${candHtml(t)}${actsHtml(t)}`;}
     cw.innerHTML+=`<div class="card"><div class="spine" style="background:${col}"></div><div class="cbody">
       <div class="chead"><div><div class="label">${t.flag} ${t.label}</div><div class="method">${t.market==='US'?'미국·S&P500':'한국·코스피200'} · 3박자</div></div>${stateBadge(t)}</div>${inner}</div></div>`;});
